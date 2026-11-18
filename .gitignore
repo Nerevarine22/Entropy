@@ -1,0 +1,28 @@
+# Secrets and credentials, configured outside Git
+**/.env
+**/.env.*
+**/.dev.vars*
+**/*.pem
+**/*.key
+**/*.secret
+# Local data, caches, dependencies and build artifacts
+**/.git/
+**/runtime/
+**/.sites-runtime/
+**/.wrangler/
+**/node_modules/
+**/dist/
+**/.next/
+**/.vinext/
+**/coverage/
+**/outputs/
+**/work/
+**/*.sqlite
+**/*.sqlite-*
+**/*.db
+**/*.db-*
+**/*.log
+**/*.tsbuildinfo
+**/.DS_Store
+**/*.tar.gz
+**/site.tar.gz
