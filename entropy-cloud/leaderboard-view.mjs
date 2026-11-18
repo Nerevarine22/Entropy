@@ -3,7 +3,7 @@ import Model from '../entropy-app/model.js';
 export const POST_PAGE_SIZE = 10;
 const CREATOR_PAGE_SIZE = 20;
 
-function total(posts, field) {
+export function total(posts, field) {
   let sum = 0;
   for (const post of posts) {
     const value = post.metrics[field];

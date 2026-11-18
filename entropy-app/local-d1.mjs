@@ -14,15 +14,32 @@ async function openDb() {
   if (files.length !== 1) throw new Error('Expected exactly one local D1 database.');
   return new DatabaseSync(path.join(dbDir, files[0]));
 }
+export function localD1Binding(db) {
+  const statement = (sql, values = []) => ({
+    bind: (...parameters) => statement(sql, parameters),
+    all: () => ({ results: db.prepare(sql).all(...values) }),
+    first: () => db.prepare(sql).get(...values) ?? null,
+    run: () => ({ meta: { changes: db.prepare(sql).run(...values).changes } }),
+  });
+  return {
+    prepare: statement,
+    batch(statements) {
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        const results = statements.map(query => query.run());
+        db.exec('COMMIT');
+        return results;
+      } catch (error) {
+        db.exec('ROLLBACK');
+        throw error;
+      }
+    },
+  };
+}
 export async function withLocalD1(use) {
   const db = await openDb();
   try {
-    const binding = { prepare(sql) {
-      return { bind(...values) {
-        return { all: () => ({ results: db.prepare(sql).all(...values) }) };
-      } };
-    } };
-    return await use(binding);
+    return await use(localD1Binding(db));
   } finally {
     db.close();
   }

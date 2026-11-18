@@ -26,3 +26,22 @@ export const entropyRecords = sqliteTable('entropy_records', {
   primaryKey({ columns: [table.generation, table.kind, table.recordId, table.chunkIndex] }),
   index('entropy_records_created_at_idx').on(table.createdAt),
 ]);
+
+export const entropyCreatorReviews = sqliteTable('entropy_creator_reviews', {
+  authorId: text('author_id').primaryKey(),
+  snapshotId: text('snapshot_id').notNull(),
+  datasetAsOf: text('dataset_as_of'),
+  reviewedAt: text('reviewed_at').notNull(),
+  actorId: text('actor_id').notNull(),
+});
+
+export const entropyModerationLog = sqliteTable('entropy_moderation_log', {
+  id: text('id').primaryKey(),
+  authorId: text('author_id').notNull(),
+  postId: text('post_id'),
+  action: text('action').notNull(),
+  reason: text('reason'),
+  snapshotId: text('snapshot_id').notNull(),
+  actorId: text('actor_id').notNull(),
+  createdAt: text('created_at').notNull(),
+}, table => [index('entropy_moderation_log_author_idx').on(table.authorId, table.createdAt)]);

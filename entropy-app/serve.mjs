@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import { Readable } from 'node:stream';
 import path from 'node:path';
 import { readLocalDataset, withLocalD1 } from './local-d1.mjs';
 import leaderboard from '../entropy-cloud/leaderboard-worker.mjs';
@@ -24,15 +25,19 @@ const port = Number(process.env.ENTROPY_PORT || 8767);
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Некоректний ENTROPY_PORT.');
 const server = createServer(async (req, res) => {
   try {
-    if (!['GET', 'HEAD'].includes(req.method)) { res.writeHead(405); res.end(); return; }
-    const parsed = new URL(req.url, 'http://127.0.0.1:' + port);
-    if (parsed.pathname === '/api/leaderboard' && parsed.searchParams.has('view')) {
-      const response = await withLocalD1(DB => leaderboard.fetch(new Request(parsed, { method: req.method }), { DB, previewCache }));
+    const host = req.headers.host === 'localhost:' + port ? req.headers.host : '127.0.0.1:' + port;
+    const parsed = new URL(req.url, 'http://' + host);
+    if (parsed.pathname === '/api/admin' || parsed.pathname === '/api/leaderboard') {
+      const request = new Request(parsed, { method: req.method, headers: req.headers,
+        ...(req.method === 'POST' ? { body: Readable.toWeb(req), duplex: 'half' } : {}) });
+      const response = await withLocalD1(DB => leaderboard.fetch(request, { DB, previewCache,
+        ENTROPY_ADMIN_SECRET: process.env.ENTROPY_ADMIN_SECRET, ENTROPY_ADMIN_ID: process.env.ENTROPY_ADMIN_ID }));
       res.writeHead(response.status, { ...Object.fromEntries(response.headers), 'Cache-Control': 'no-store' });
       res.end(Buffer.from(await response.arrayBuffer()));
       return;
     }
-    const name = parsed.pathname === '/' ? 'experience.html' : decodeURIComponent(parsed.pathname).slice(1);
+    if (!['GET', 'HEAD'].includes(req.method)) { res.writeHead(405); res.end(); return; }
+    const name = ['/', '/admin', '/admin/'].includes(parsed.pathname) ? 'experience.html' : decodeURIComponent(parsed.pathname).slice(1);
     if (!allowed.has(name)) { res.writeHead(404); res.end('Not found'); return; }
     let body;
     if (name === 'seed.js') {

@@ -1,4 +1,6 @@
 import { creatorSummary, POST_PAGE_SIZE, rankPage, requestedPage, summarize } from './leaderboard-view.mjs';
+import { handleAdmin } from './admin-worker.mjs';
+import { currentControl, rankingReviews, storedRecords } from './moderation-store.mjs';
 
 const METRICS = ['impressions', 'likes', 'reposts', 'quotes', 'replies'];
 const xId = value => typeof value === 'string' && /^[1-9]\d*$/.test(value);
@@ -13,26 +15,14 @@ function avatarUrl(value) {
   return null;
 }
 
-export function publicDataset(records) {
+export function publicDataset(records, includeExcluded = false) {
   const authors = new Map();
   const posts = [];
   const bans = new Set();
   const periodExclusions = new Set();
   const postExclusions = new Set();
   let asOf = null;
-  const entities = [];
-  for (const record of records) {
-    const last = entities.at(-1);
-    if (last?.kind === record.kind && last.id === record.record_id) {
-      if (record.chunk_index !== last.chunks.length) throw new Error('Incomplete record.');
-      last.chunks.push(record.payload);
-    } else {
-      if (record.chunk_index !== 0) throw new Error('Incomplete record.');
-      entities.push({ kind: record.kind, id: record.record_id, chunks: [record.payload] });
-    }
-  }
-
-  for (const { kind, id, chunks } of entities) {
+  for (const { kind, id, chunks } of storedRecords(records)) {
     if (kind === 'state:bans') { bans.add(id); continue; }
     if (kind === 'state:periodDecisions') { periodExclusions.add(id); continue; }
     if (kind === 'state:postExclusions') { postExclusions.add(id); continue; }
@@ -58,13 +48,18 @@ export function publicDataset(records) {
       });
     }
   }
-  const visiblePosts = posts.filter(post => authors.has(post.authorId) && !bans.has(post.authorId)
-    && !postExclusions.has(post.id) && !periodExclusions.has(post.date.slice(0, 7) + '|' + post.authorId));
+  const excluded = post => bans.has(post.authorId) || postExclusions.has(post.id)
+    || periodExclusions.has(post.date.slice(0, 7) + '|' + post.authorId);
+  if (includeExcluded) {
+    return { meta: { asOf }, authors: [...authors.values()], posts: posts.filter(post => authors.has(post.authorId))
+      .map(post => ({ ...post, excluded: excluded(post) })) };
+  }
+  const visiblePosts = posts.filter(post => authors.has(post.authorId) && !excluded(post));
   const visibleAuthors = new Set(visiblePosts.map(post => post.authorId));
   return { meta: { asOf }, authors: [...authors.values()].filter(author => visibleAuthors.has(author.id)), posts: visiblePosts };
 }
 
-const publicHeaders = { 'Cache-Control': 'public, max-age=0, s-maxage=60', 'X-Content-Type-Options': 'nosniff' };
+const publicHeaders = { 'Cache-Control': 'public, max-age=0, must-revalidate', 'X-Content-Type-Options': 'nosniff' };
 const privateHeaders = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' };
 const CACHE_SECONDS = 900;
 const cacheFills = new Map();
@@ -89,19 +84,54 @@ async function cached(cache, key, build) {
   return cacheFills.get(key);
 }
 
-async function readDataset(db, includeText) {
+async function readDataset(db, includeText, generation, includeExcluded = false) {
   const { results } = await db.prepare(`
     SELECT kind, record_id, chunk_index,
       CASE WHEN kind LIKE 'state:%' THEN NULL
         WHEN ? = 0 AND kind = 'post' AND chunk_index = 0 AND json_valid(payload) THEN json_remove(payload,'$.body','$.summary')
         ELSE payload END AS payload
     FROM entropy_records
-    WHERE generation = (SELECT generation FROM entropy_control WHERE id = 'main')
+    WHERE generation = ?
       AND kind IN ('dataset-meta', 'author', 'post', 'state:bans', 'state:periodDecisions', 'state:postExclusions')
     ORDER BY kind, record_id, chunk_index
-  `).bind(includeText ? 1 : 0).all();
+  `).bind(includeText ? 1 : 0, generation).all();
   if (!results.length) throw new Error('Missing published generation.');
-  return publicDataset(results);
+  return publicDataset(results, includeExcluded);
+}
+
+async function rankingSnapshot(env, url, control) {
+  const cache = env.previewCache ?? globalThis.caches?.default;
+  const key = `${url.origin}/__entropy_cache/v3/${control.generation}/${control.revision}/ranking`;
+  return cached(cache, key, async () => {
+    const [dataset, reviews] = await Promise.all([
+      readDataset(env.DB, false, control.generation, true), rankingReviews(env.DB, control.generation),
+    ]);
+    const snapshot = summarize({ ...dataset, posts: dataset.posts.filter(post => !post.excluded) });
+    const counts = new Map();
+    for (const post of dataset.posts) counts.set(post.authorId, (counts.get(post.authorId) || 0) + 1);
+    snapshot.rows = snapshot.rows.map(row => ({ ...row, reviewedAt: reviews.get(row.author.id)?.status === 'reviewed'
+      ? reviews.get(row.author.id).reviewedAt : null }));
+    const ranked = new Set(snapshot.rows.map(row => row.author.id));
+    const excludedCreators = dataset.authors.filter(author => counts.has(author.id) && !ranked.has(author.id))
+      .sort((a,b) => a.handle.localeCompare(b.handle)).map(author => ({
+        author, rank: null, postCount: 0, views: 0, likes: 0, engagement: null, early: false,
+      }));
+    const adminRows = [...snapshot.rows, ...excludedCreators].map(row => ({ ...row,
+      totalPosts: counts.get(row.author.id), review: reviews.get(row.author.id) ?? { status: 'unreviewed' },
+    }));
+    return { ...snapshot, adminRows };
+  });
+}
+
+const searchQuery = url => (url.searchParams.get('q') || '').trim().replace(/^@/, '').toLowerCase().slice(0, 80);
+
+async function adminRanking(env, url) {
+  const snapshot = await rankingSnapshot(env, url, await currentControl(env.DB));
+  const status = url.searchParams.get('status');
+  const rows = ['reviewed', 'needs-review', 'unreviewed'].includes(status)
+    ? snapshot.adminRows.filter(row => row.review.status === status) : snapshot.adminRows;
+  const page = rankPage({ ...snapshot, rows }, requestedPage(url.searchParams.get('page')), searchQuery(url));
+  return { ...page, leaders: snapshot.rows.filter(row => row.views > 0).slice(0, 20).map(creatorSummary) };
 }
 
 async function readProfilePage(db, id, postIds) {
@@ -136,25 +166,27 @@ async function readProfilePage(db, id, postIds) {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    if (url.pathname === '/api/admin') return handleAdmin(request, env, target => adminRanking(env, target));
     if (url.pathname !== '/api/leaderboard') return new Response('Not Found', { status: 404 });
     if (request.method !== 'GET') return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'GET' } });
     try {
       const cache = env.previewCache ?? globalThis.caches?.default;
-      const cacheKey = url.origin + '/__entropy_cache/v2/';
+      const control = await currentControl(env.DB);
+      const cacheKey = `${url.origin}/__entropy_cache/v3/${control.generation}/${control.revision}/`;
       const view = url.searchParams.get('view');
       // Existing production clients still consume the legacy response during rollout.
       if (view === null) {
-        const dataset = await cached(cache, cacheKey + 'legacy', () => readDataset(env.DB, true));
+        const dataset = await cached(cache, cacheKey + 'legacy', () => readDataset(env.DB, true, control.generation));
         return Response.json(dataset, { headers: publicHeaders });
       }
       const id = url.searchParams.get('creator');
       if (view !== 'ranking' && (view !== 'profile' || !xId(id) || id.length > 24)) {
         return Response.json({ error: 'Invalid leaderboard request.' }, { status: 400, headers: privateHeaders });
       }
-      const snapshot = await cached(cache, cacheKey + 'ranking', async () => summarize(await readDataset(env.DB, false)));
+      const snapshot = await rankingSnapshot(env, url, control);
       const page = requestedPage(url.searchParams.get('page'));
       if (view === 'ranking') {
-        const search = (url.searchParams.get('q') || '').trim().replace(/^@/, '').toLowerCase().slice(0, 80);
+        const search = searchQuery(url);
         return Response.json(rankPage(snapshot, page, search), { headers: search ? privateHeaders : publicHeaders });
       }
 

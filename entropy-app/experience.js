@@ -1,14 +1,21 @@
 (() => {
   'use strict';
   const $ = id => document.getElementById(id);
-  const source = document.currentScript.dataset.source;
-  async function getData(params, signal) {
+  const admin = /^\/admin\/?$/.test(location.pathname);
+  const source = admin ? '/api/admin' : document.currentScript.dataset.source;
+  async function getData(params, signal, action) {
     const url = new URL(source, location.origin);
     url.search = new URLSearchParams(params);
     const timeout = AbortSignal.timeout(12000);
-    const response = await fetch(url, { signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
-    if (!response.ok) throw new Error('Leaderboard request failed.');
-    return response.json();
+    const response = await fetch(url, { signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+      ...(action ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(action) } : {}) });
+    const data = await response.json();
+    if (!response.ok) {
+      const error = new Error(admin && typeof data.error === 'string' ? data.error : 'Leaderboard request failed.');
+      error.status = response.status;
+      throw error;
+    }
+    return data;
   }
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const format = value => value === null ? '—' : new Intl.NumberFormat('en-US').format(value);
@@ -19,7 +26,17 @@
   let boardPage = 1;
   let boardRequest, searchTimer;
   let loadedBoard = false;
+  let adminSignedIn = false;
   const earlyBadge = '<span class="early-badge" title="Posted about Entropy during its first month">Early</span>';
+  const reviewDate = value => value ? new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }).format(new Date(value)) : '';
+
+  function reviewBadge(review) {
+    if (review?.status === 'reviewed') {
+      return `<span class="review-badge reviewed">Reviewed · ${esc(reviewDate(review.reviewedAt))}</span>`;
+    }
+    if (review?.status === 'needs-review') return '<span class="review-badge needs-review">Needs review</span>';
+    return '<span class="review-badge">Not reviewed</span>';
+  }
 
   function renderPagination(totalPages) {
     const pagination = $('board-pagination');
@@ -54,17 +71,18 @@
     $('leaderboard-body').innerHTML = visible.map(row => {
       const count = row.author.twitterScore?.smartFollowers;
       const smartFollowers = Number.isSafeInteger(count) && count >= 0 ? count : null;
-      const rank = row.rank <= 3
+      const rank = row.rank === null ? '<span class="rank">—</span>' : row.rank <= 3
         ? `<span class="rank rank-podium rank-podium-${row.rank}">${row.rank}</span>`
         : `<span class="rank">${String(row.rank).padStart(2, '0')}</span>`;
       return `<tr tabindex="0" role="button" data-creator="${esc(row.author.id)}" aria-label="View ${esc(row.author.handle)} profile${row.early ? ', Early creator' : ''}">
         <td>${rank}</td>
-        <td><div class="creator">${avatar(row.author)}<div><div class="creator-name-line"><span class="creator-name">${esc(row.author.displayName || row.author.handle)}</span>${row.early ? earlyBadge : ''}</div><span class="creator-handle">@${esc(row.author.handle)}</span></div></div></td>
-        <td class="num">${format(row.postCount)}</td>
+        <td><div class="creator">${avatar(row.author)}<div><div class="creator-name-line"><span class="creator-name">${esc(row.author.displayName || row.author.handle)}</span>${row.early ? earlyBadge : ''}${!admin && row.reviewedAt ? reviewBadge({ status: 'reviewed', reviewedAt: row.reviewedAt }) : ''}</div><span class="creator-handle">@${esc(row.author.handle)}</span></div></div></td>
+        <td class="num">${format(row.postCount)}${admin && row.totalPosts > row.postCount ? `<small class="excluded-count">${format(row.totalPosts - row.postCount)} excluded</small>` : ''}</td>
         <td class="num primary">${format(row.views)}</td>
         <td class="num">${format(row.likes)}</td>
         <td class="num">${row.engagement === null ? '—' : row.engagement.toFixed(2) + '%'}</td>
         <td class="num" data-metric="smart-followers">${format(smartFollowers)}</td>
+        ${admin ? `<td class="review-column">${reviewBadge(row.review)}${row.review.snapshotId ? `<small class="review-snapshot" title="${esc(row.review.snapshotId)}">${esc(row.review.snapshotId.slice(0, 8))} · ${esc(reviewDate(row.review.datasetAsOf || row.review.reviewedAt))}</small>` : ''}</td>` : ''}
         <td class="row-arrow">↗</td>
       </tr>`;
     }).join('');
@@ -83,7 +101,8 @@
     if (!loadedBoard) $('load-status').textContent = 'Loading leaderboard…';
     const q = $('search').value.trim();
     try {
-      const data = await getData({ view: 'ranking', page, ...(q ? { q } : {}) }, request.signal);
+      const status = admin ? $('review-filter').value : '';
+      const data = await getData({ view: 'ranking', page, ...(q ? { q } : {}), ...(status ? { status } : {}) }, request.signal);
       if (request.signal.aborted) return;
       const mapChanged = !loadedBoard || JSON.stringify(leaders) !== JSON.stringify(data.leaders);
       leaders = data.leaders;
@@ -102,8 +121,9 @@
         heading.focus({ preventScroll: true });
         heading.scrollIntoView({ block: 'start', behavior: 'instant' });
       }
-    } catch {
+    } catch (error) {
       if (request.signal.aborted) return;
+      if (admin && error.status === 401) { showAdminSignIn('Your session has expired.'); return; }
       const status = loadedBoard ? $('board-count') : $('load-status');
       status.hidden = false;
       status.textContent = 'Could not load the leaderboard. Please try again.';
@@ -167,8 +187,44 @@
   let profileRequest;
   let profileId;
   let nextPostPage = 1;
+  let profileSnapshot;
+  let moderationBusy = false;
 
-  async function loadPosts() {
+  function renderModerationPost(post) {
+    const excluded = post.exclusion || post.blockedBy;
+    const reason = post.exclusion?.reason;
+    return `<article class="profile-post${excluded ? ' moderation-excluded' : ''}">
+      <div class="moderation-post-head"><span class="review-badge ${excluded ? 'needs-review' : 'reviewed'}">${excluded ? 'Excluded' : 'Included'}</span><time datetime="${esc(post.date)}">${esc(post.date)}</time></div>
+      <p>${esc(post.body || 'Post text unavailable.')}</p>
+      <div class="profile-post-meta"><a href="${esc(post.url)}" target="_blank" rel="noopener noreferrer">VIEW POST ↗</a><span>${format(post.views)} views</span><span>${format(post.likes)} likes</span></div>
+      ${reason ? `<p class="moderation-reason"><strong>Reason</strong> ${esc(reason)}</p>` : ''}
+      ${post.blockedBy ? `<p class="moderation-reason">${esc(post.blockedBy)} also applies.</p>` : ''}
+      ${post.exclusion
+        ? `<form class="moderation-form" data-action="restore" data-post="${esc(post.id)}"><button class="admin-button" type="submit">Restore post</button></form>`
+        : `<details class="moderation-form"><summary>Exclude post</summary><form data-action="exclude" data-post="${esc(post.id)}"><label>Reason<textarea name="reason" rows="2" minlength="3" maxlength="1000" required></textarea></label><button class="admin-button admin-button-danger" type="submit">Exclude from leaderboard</button></form></details>`}
+    </article>`;
+  }
+
+  function renderReviewDetails(result) {
+    const review = result.review;
+    $('profile-counted-posts').textContent = format(result.totals.posts);
+    $('profile-views').textContent = format(result.totals.views);
+    $('profile-likes').textContent = format(result.totals.likes);
+    $('moderation-review-status').innerHTML = `${reviewBadge(review)}
+      <span title="${esc(result.snapshotId)}">Current snapshot ${esc(result.snapshotId.slice(0, 8))}${result.datasetAsOf ? ` · ${esc(reviewDate(result.datasetAsOf))}` : ''}</span>
+      ${review.snapshotId ? `<span title="${esc(review.snapshotId)}">Last reviewed snapshot ${esc(review.snapshotId.slice(0, 8))} · ${esc(reviewDate(review.reviewedAt))}</span>` : ''}`;
+    $('mark-reviewed').disabled = review.status === 'reviewed';
+    const history = $('moderation-history');
+    history.hidden = !result.history.length;
+    const actionLabels = { exclude: 'Post excluded', restore: 'Post restored', review: 'Creator reviewed' };
+    $('moderation-events').innerHTML = result.history.map(event => `<li>
+      <strong>${esc(actionLabels[event.action])}</strong> · ${esc(reviewDate(event.at))} · ${esc(event.actorId)}
+      <span title="${esc(event.snapshotId)}"> · ${esc(event.snapshotId.slice(0, 8))}</span>
+      ${event.postId ? ` · <a href="https://x.com/i/web/status/${esc(event.postId)}" target="_blank" rel="noopener noreferrer">Post ↗</a>` : ''}
+      ${event.reason ? `<p>${esc(event.reason)}</p>` : ''}</li>`).join('');
+  }
+
+  async function loadPosts(page = nextPostPage) {
     if (profileRequest || !profileId) return;
     const request = new AbortController();
     profileRequest = request;
@@ -177,15 +233,32 @@
     status.textContent = 'Loading posts…';
     more.hidden = true;
     try {
-      const result = await getData({ view: 'profile', creator: profileId, page: nextPostPage }, request.signal);
+      const result = await getData({ view: 'profile', creator: profileId, page }, request.signal);
       if (request.signal.aborted) return;
-      $('profile-posts').insertAdjacentHTML('beforeend', result.posts.map((post, index) => renderPost(post, result.offset + index)).join(''));
-      status.textContent = nextPostPage === 1 && result.posts.length === 0 ? 'No indexed posts available.' : '';
-      nextPostPage = result.page + 1;
+      const container = $('profile-posts');
+      if (admin) {
+        if (profileSnapshot && result.snapshotId !== profileSnapshot) {
+          profileSnapshot = null;
+          $('mark-reviewed').disabled = true;
+          status.textContent = 'This creator’s posts changed. Reopen the profile to review the current snapshot.';
+          return;
+        }
+        profileSnapshot = result.snapshotId;
+        const markup = `<div class="profile-posts" data-post-page="${result.page}">${result.posts.map(renderModerationPost).join('')}</div>`;
+        const existing = container.querySelector(`[data-post-page="${result.page}"]`);
+        if (existing) existing.outerHTML = markup;
+        else container.insertAdjacentHTML('beforeend', markup);
+        renderReviewDetails(result);
+      } else {
+        container.insertAdjacentHTML('beforeend', result.posts.map((post, index) => renderPost(post, result.offset + index)).join(''));
+      }
+      status.textContent = page === 1 && result.posts.length === 0 ? 'No indexed posts available.' : '';
+      nextPostPage = Math.max(nextPostPage, result.page + 1);
       more.textContent = 'Load more posts';
       more.hidden = nextPostPage > result.totalPages;
-    } catch {
+    } catch (error) {
       if (request.signal.aborted) return;
+      if (admin && error.status === 401) { showAdminSignIn('Your session has expired.'); return; }
       status.textContent = 'Could not load posts.';
       more.textContent = 'Try again';
       more.hidden = false;
@@ -206,22 +279,28 @@
         <div><div class="creator-name-line"><h2 id="dialog-name">${esc(name)}</h2>${row.early ? earlyBadge : ''}</div><a href="https://x.com/${encodeURIComponent(row.author.handle)}" target="_blank" rel="noopener noreferrer">@${esc(row.author.handle)} ↗</a></div>
       </div>
       <div class="profile-stats">
-        <div><span>INDEXED POSTS</span><strong>${format(row.postCount)}</strong></div>
-        <div><span>TOTAL VIEWS</span><strong>${format(row.views)}</strong></div>
-        <div><span>TOTAL LIKES</span><strong>${format(row.likes)}</strong></div>
+        <div><span>${admin ? 'COUNTED POSTS' : 'INDEXED POSTS'}</span><strong id="profile-counted-posts">${format(row.postCount)}</strong></div>
+        <div><span>TOTAL VIEWS</span><strong id="profile-views">${format(row.views)}</strong></div>
+        <div><span>TOTAL LIKES</span><strong id="profile-likes">${format(row.likes)}</strong></div>
       </div>
+      ${admin ? `<div class="moderation-review"><div id="moderation-review-status"></div>
+        <form data-action="review"><button id="mark-reviewed" class="admin-button admin-button-primary" type="submit" disabled>Mark reviewed</button></form>
+        <p id="moderation-feedback" role="status"></p></div>
+        <details id="moderation-history" class="moderation-history" hidden><summary>Moderation history</summary><ul id="moderation-events"></ul></details>` : ''}
       <h3 class="profile-posts-title">Indexed posts</h3>
       <div id="profile-posts" class="profile-posts"></div>
       <p id="profile-post-status" class="board-footer" role="status"></p>
       <button id="profile-post-more" class="post-toggle" type="button" hidden>Load more posts</button>`;
     profileId = id;
+    profileSnapshot = null;
     nextPostPage = 1;
     dialog.showModal();
     dialog.scrollTop = 0;
     loadPosts();
   }
   function showPage() {
-    const key = ['leaderboard', 'methodology', 'about'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'leaderboard';
+    const key = admin ? (adminSignedIn ? 'leaderboard' : '')
+      : ['leaderboard', 'methodology', 'about'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'leaderboard';
     document.querySelectorAll('.page').forEach(el => { el.hidden = el.id !== 'page-' + key; });
     document.querySelectorAll('[data-page]').forEach(el => { el.classList.toggle('active', el.dataset.page === key); if (el.dataset.page === key) el.setAttribute('aria-current', 'page'); else el.removeAttribute('aria-current'); });
     $('load-status').hidden = key !== 'leaderboard' || loadedBoard;
@@ -236,10 +315,11 @@
     profileRequest?.abort();
     profileRequest = null;
     profileId = null;
+    profileSnapshot = null;
   });
   $('dialog-content').addEventListener('click', event => {
     if (event.target.id === 'profile-post-more') {
-      loadPosts();
+      if (!moderationBusy) loadPosts();
       return;
     }
     const button = event.target.closest('.post-toggle');
@@ -253,6 +333,38 @@
     button.setAttribute('aria-expanded', String(expand));
     button.textContent = expand ? 'Show less' : 'Show more';
   });
+  if (admin) {
+    $('dialog-content').addEventListener('submit', async event => {
+      const form = event.target.closest('form[data-action]');
+      if (!form) return;
+      event.preventDefault();
+      if (moderationBusy || profileRequest || !profileId || !profileSnapshot) return;
+      const { action, post: postId } = form.dataset;
+      const creator = profileId;
+      const page = Number(form.closest('[data-post-page]')?.dataset.postPage || 1);
+      const feedback = $('moderation-feedback');
+      const button = form.querySelector('button[type="submit"]');
+      moderationBusy = true;
+      button.disabled = true;
+      feedback.textContent = 'Saving…';
+      try {
+        await getData({}, null, { action, creator, postId, snapshotId: profileSnapshot, reason: form.elements.reason?.value });
+        if (creator === profileId) {
+          await loadPosts(page);
+          feedback.textContent = { exclude: 'Post excluded.', restore: 'Post restored.', review: 'Review saved.' }[action];
+        }
+        loadBoard(boardPage);
+      } catch (error) {
+        if (error.status === 401) showAdminSignIn('Your session has expired.');
+        else feedback.textContent = error.message;
+      } finally {
+        moderationBusy = false;
+        if (button.isConnected && action !== 'review') button.disabled = false;
+        if (button.isConnected && action === 'review' && feedback.textContent !== 'Review saved.' && profileSnapshot) button.disabled = false;
+      }
+    });
+    $('review-filter').addEventListener('change', () => loadBoard(1));
+  }
   $('search').addEventListener('input', () => {
     boardRequest?.abort();
     clearTimeout(searchTimer);
@@ -268,6 +380,68 @@
   });
   window.addEventListener('hashchange', showPage);
   window.addEventListener('resize', () => { if (!$('page-leaderboard').hidden) buildMap(); });
-  showPage();
-  loadBoard(1);
+
+  function showAdminSignIn(message = '') {
+    adminSignedIn = false;
+    boardRequest?.abort();
+    clearTimeout(searchTimer);
+    $('creator-dialog').close();
+    $('dialog-content').replaceChildren();
+    $('leaderboard-body').replaceChildren();
+    rows = [];
+    leaders = [];
+    loadedBoard = false;
+    $('admin-sign-out').hidden = true;
+    $('admin-access-status').textContent = message;
+    $('admin-sign-in').hidden = false;
+    showPage();
+  }
+
+  function openModeration() {
+    adminSignedIn = true;
+    $('admin-sign-in').hidden = true;
+    $('admin-sign-out').hidden = false;
+    showPage();
+    loadBoard(1);
+  }
+
+  async function initAdmin() {
+    document.body.classList.add('admin-mode');
+    document.title = 'Moderation · Entropy Creators';
+    $('public-navigation').hidden = true;
+    $('explore-entropy').hidden = true;
+    $('admin-public-link').hidden = false;
+    $('review-filter-label').hidden = false;
+    $('review-column').hidden = false;
+    $('board-heading').textContent = 'Moderation';
+    showPage();
+    $('admin-sign-in-form').addEventListener('submit', async event => {
+      event.preventDefault();
+      const button = event.currentTarget.querySelector('button');
+      const key = $('admin-key').value;
+      $('admin-key').value = '';
+      $('admin-access-status').textContent = 'Signing in…';
+      button.disabled = true;
+      try {
+        await getData({}, null, { action: 'login', key });
+        openModeration();
+      } catch (error) { $('admin-access-status').textContent = error.message; }
+      finally { button.disabled = false; }
+    });
+    $('admin-sign-out').addEventListener('click', async () => {
+      try { await getData({}, null, { action: 'logout' }); showAdminSignIn(); }
+      catch (error) {
+        if (error.status === 401) showAdminSignIn();
+        else $('board-count').textContent = 'Could not sign out. Try again.';
+      }
+    });
+    try {
+      const session = await getData({ view: 'session' });
+      if (session.authenticated) openModeration();
+      else showAdminSignIn();
+    } catch (error) { showAdminSignIn(error.message); }
+  }
+
+  if (admin) initAdmin();
+  else { showPage(); loadBoard(1); }
 })();

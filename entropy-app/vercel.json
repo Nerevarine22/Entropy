@@ -3,6 +3,7 @@
   "framework": null,
   "buildCommand": "node build-vercel.mjs",
   "outputDirectory": "dist",
+  "rewrites": [{ "source": "/admin", "destination": "/index.html" }],
   "headers": [
     {
       "source": "/(.*)",
