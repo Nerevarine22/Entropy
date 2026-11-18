@@ -1,0 +1,704 @@
+import test, { after, beforeEach } from 'node:test';
+import assert from 'node:assert/strict';
+import { DatabaseSync } from 'node:sqlite';
+import { readFile } from 'node:fs/promises';
+import { build } from 'esbuild';
+
+const scope = { DB: null };
+globalThis.__entropyCloudTestEnv = scope;
+const originalFetch = globalThis.fetch;
+let sqlite, beforeBatch;
+let batchSizes = [];
+class Statement {
+  constructor(sql, args = []) { this.sql = sql; this.args = args; }
+  bind(...args) { return new Statement(this.sql, args); }
+  runSync() { const result = sqlite.prepare(this.sql).run(...this.args); return { success: true, meta: { changes: Number(result.changes) } }; }
+  async run() { return this.runSync(); }
+  async first(column) { const row = sqlite.prepare(this.sql).get(...this.args); return column ? row?.[column] ?? null : row ?? null; }
+  async all() { return { success: true, results: sqlite.prepare(this.sql).all(...this.args), meta: { changes: 0 } }; }
+}
+const database = {
+  prepare(sql) { return new Statement(sql); },
+  async batch(statements) {
+    batchSizes.push(statements.length);
+    if (beforeBatch) await beforeBatch(statements);
+    sqlite.exec('BEGIN');
+    try { const result = statements.map(statement => statement.runSync()); sqlite.exec('COMMIT'); return result; }
+    catch (error) { sqlite.exec('ROLLBACK'); throw error; }
+  },
+};
+const migration = await readFile(new URL('../drizzle/0000_aberrant_gamora.sql', import.meta.url), 'utf8');
+async function moduleFor(path) {
+  const result = await build({ entryPoints: [new URL(path, import.meta.url).pathname], bundle: true, format: 'esm', platform: 'node', target: 'node22', write: false,
+    plugins: [{ name: 'test-env', setup(builder) {
+      builder.onResolve({ filter: /^cloudflare:workers$/ }, () => ({ path: 'env', namespace: 'cloud-test' }));
+      builder.onLoad({ filter: /.*/, namespace: 'cloud-test' }, () => ({ contents: 'export const env = globalThis.__entropyCloudTestEnv;', loader: 'js' }));
+    } }] });
+  return import('data:text/javascript;base64,' + Buffer.from(result.outputFiles[0].text).toString('base64'));
+}
+const store = await moduleFor('../lib/workbench.ts');
+const api = await moduleFor('../app/api/[...path]/route.ts');
+const mcp = await moduleFor('../app/mcp/route.ts');
+const internal = await moduleFor('../app/internal/sync/route.ts');
+const backfill = await moduleFor('../app/internal/backfill/route.ts');
+const community = await moduleFor('../app/internal/community-sync/route.ts');
+beforeEach(() => {
+  sqlite?.close(); sqlite = new DatabaseSync(':memory:'); sqlite.exec(migration);
+  scope.DB = database; delete scope.TWITTERAPI_IO_KEY;
+  delete scope.COMMUNITY_VIEWER_URL; delete scope.COMMUNITY_SYNC_SECRET;
+  batchSizes = []; beforeBatch = null;
+  globalThis.fetch = async () => { throw new Error('Unexpected network call in test'); };
+});
+after(() => { sqlite?.close(); globalThis.fetch = originalFetch; delete globalThis.__entropyCloudTestEnv; });
+const control = () => sqlite.prepare('SELECT * FROM entropy_control WHERE id=?').get('main');
+const fakeKey = () => { scope.TWITTERAPI_IO_KEY = 'FAKE_TEST_PROVIDER_KEY_DO_NOT_RETURN'; };
+const emptyProvider = () => ({ ok: true, status: 200, json: async () => ({ status: 'success', tweets: [], has_next_page: false, next_cursor: '' }) });
+const context = path => ({ params: Promise.resolve({ path: [path] }) });
+function browserRequest(path, payload, extraHeaders = {}) {
+  return new Request('https://entropy.example/api/' + path, { method: 'POST', headers: { 'content-type': 'application/json', origin: 'https://entropy.example', 'oai-authenticated-user-id': 'owner', ...extraHeaders }, body: JSON.stringify(payload) });
+}
+
+test('seed initializes once, stays disabled, and does not fabricate live success', async () => {
+  const first = await store.getWorkbench(), again = await store.getWorkbench();
+  assert.equal(first.revision, 0); assert.equal(first.dataset.posts.length, 24); assert.equal(first.mode, 'cloud');
+  assert.equal(first.sync.enabled, false); assert.equal(first.sync.lastSuccessAt, null); assert.equal(first.connection.configured, false);
+  assert.equal(first.sync.attemptBudget.limit, 288); assert.equal(again.revision, 0);
+  assert.equal(sqlite.prepare('SELECT count(*) n FROM entropy_control').get().n, 1);
+  assert.ok(!JSON.stringify(first).includes('lease_token'));
+});
+test('state writes use strong CAS; competing edits cannot overwrite each other', async () => {
+  const first = await store.getWorkbench();
+  const a = structuredClone(first.state), b = structuredClone(first.state);
+  a.bans[first.dataset.authors[0].id] = { reason: 'Visible decision A', internalNote: 'PRIVATE_A', at: new Date().toISOString() };
+  b.bans[first.dataset.authors[1].id] = { reason: 'Visible decision B', at: new Date().toISOString() };
+  const results = await Promise.allSettled([store.saveState(a, 0, 'owner'), store.saveState(b, 0, 'owner')]);
+  assert.equal(results.filter(r => r.status === 'fulfilled').length, 1);
+  const rejected = results.find(r => r.status === 'rejected'); assert.equal(rejected.reason.code, 'CONFLICT');
+  const current = await store.getWorkbench(); assert.equal(current.revision, 1); assert.equal(Object.keys(current.state.bans).length, 1);
+  await assert.rejects(store.saveState(first.state, 0, 'owner'), error => error.code === 'CONFLICT');
+});
+test('enabling requires a server secret; neither normal responses nor backups receive it', async () => {
+  const first = await store.getWorkbench();
+  await assert.rejects(store.setCollector(true, first.revision), error => error.code === 'KEY_REQUIRED');
+  fakeKey();
+  const enabled = await store.setCollector(true, 0);
+  assert.equal(enabled.connection.configured, true); assert.equal(enabled.connection.keySource, 'environment'); assert.equal(enabled.sync.enabled, true);
+  assert.ok(!JSON.stringify(enabled).includes(scope.TWITTERAPI_IO_KEY)); assert.equal(control().daily_attempts, 0);
+});
+test('every committed edit mirrors only the filtered public snapshot; delivery failure never rolls back decisions', async () => {
+  let value = await store.getWorkbench();
+  scope.COMMUNITY_VIEWER_URL = 'https://community.example'; scope.COMMUNITY_SYNC_SECRET = 'FAKE_TEST_MIRROR_SECRET';
+  fakeKey(); const sent = [];
+  globalThis.fetch = async (url, options) => { sent.push({ url: String(url), options, snapshot: JSON.parse(options.body) }); return { ok: true }; };
+  const authorId = value.dataset.authors[0].id;
+  const state = structuredClone(value.state);
+  state.bans[authorId] = { reason: 'PRIVATE_CREATOR_REASON', internalNote: 'PRIVATE_ADMIN_NOTE', at: new Date().toISOString() };
+  value = await store.saveState(state, value.revision, 'PRIVATE_OWNER_ID');
+  assert.equal(sent.length, 1); assert.equal(sent[0].url, 'https://community.example/internal/snapshot');
+  assert.equal(sent[0].options.headers.Authorization, 'Bearer FAKE_TEST_MIRROR_SECRET');
+  assert.equal(sent[0].snapshot.revision, value.revision);
+  assert.ok(!sent[0].snapshot.public.periods.some(period => period.rows.some(row => row.author.id === authorId)));
+  assert.ok(!sent[0].snapshot.public.posts.some(post => post.authorId === authorId));
+  assert.ok(!sent[0].options.body.includes('PRIVATE_'));
+  assert.ok(!sent[0].options.body.includes(scope.TWITTERAPI_IO_KEY));
+  assert.ok(!JSON.stringify(value).includes(scope.COMMUNITY_SYNC_SECRET));
+  globalThis.fetch = async () => { throw new Error('PRIVATE_MIRROR_FAILURE_DETAILS'); };
+  const failedDelivery = await store.setCollector(false, value.revision);
+  assert.equal(failedDelivery.revision, value.revision + 1);
+  assert.equal((await store.getWorkbench()).state.bans[authorId].internalNote, 'PRIVATE_ADMIN_NOTE');
+  assert.equal(control().daily_attempts, 0); assert.equal(control().lease_token, null);
+});
+test('ingestion commits push new revision while preserving independent provider credentials and request allowance', async () => {
+  fakeKey(); let value = await store.getWorkbench(); value = await store.setCollector(true, value.revision);
+  scope.COMMUNITY_VIEWER_URL = 'https://community.example'; scope.COMMUNITY_SYNC_SECRET = 'FAKE_TEST_MIRROR_SECRET';
+  const calls = [];
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url: String(url), options });
+    return String(url).startsWith('https://community.example/') ? { ok: true } : emptyProvider();
+  };
+  value = await store.runSync(value.revision, true);
+  assert.equal(calls.length, 2);
+  const mirror = calls.find(call => call.url.startsWith('https://community.example/'));
+  assert.equal(JSON.parse(mirror.options.body).revision, value.revision);
+  assert.equal(mirror.options.headers.Authorization, 'Bearer FAKE_TEST_MIRROR_SECRET');
+  assert.ok(!mirror.options.body.includes(scope.TWITTERAPI_IO_KEY));
+  assert.equal(control().daily_attempts, 1);
+});
+test('owner preview is authenticated and contains only whitelist; service republish changes no source state', async () => {
+  const value = await store.getWorkbench();
+  const unauthorized = await api.GET(new Request('https://entropy.example/api/community-preview'), context('community-preview'));
+  assert.equal(unauthorized.status, 401);
+  const preview = await api.GET(new Request('https://entropy.example/api/community-preview', { headers: { 'oai-authenticated-user-id': 'owner' } }), context('community-preview'));
+  assert.equal(preview.status, 200); const data = await preview.json();
+  assert.deepEqual(Object.keys(data), ['schemaVersion', 'revision', 'updatedAt', 'public']);
+  assert.ok(!JSON.stringify(data).includes('identityEvidence'));
+  scope.COMMUNITY_VIEWER_URL = 'https://community.example'; scope.COMMUNITY_SYNC_SECRET = 'FAKE_TEST_MIRROR_SECRET';
+  let calls = 0; globalThis.fetch = async () => { calls++; return { ok: true }; };
+  const request = new Request('https://entropy.example/internal/community-sync', { method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-entropy-update': '1' }, body: '{}' });
+  const republished = await community.POST(request);
+  assert.equal(republished.status, 200);
+  assert.deepEqual(await republished.json(), { configured: true, delivered: true, revision: value.revision });
+  assert.equal(calls, 1); assert.equal(control().revision, value.revision); assert.equal(control().daily_attempts, 0);
+  assert.equal((await store.getWorkbench()).updatedAt, value.updatedAt);
+});
+test('private community republish rejects malformed intent, origin, body and type without changing data', async () => {
+  await store.getWorkbench();
+  const cases = [
+    [{}, '{}', 403],
+    [{ 'x-entropy-update': '1', origin: 'https://evil.example' }, '{}', 403],
+    [{ 'x-entropy-update': '1', 'content-type': 'text/plain' }, '{}', 415],
+    [{ 'x-entropy-update': '1' }, '{"action":"sync"}', 400],
+    [{ 'x-entropy-update': '1' }, '[]', 400],
+    [{ 'x-entropy-update': '1' }, 'x'.repeat(1025), 413],
+  ];
+  for (const [headers, body, status] of cases) {
+    const response = await community.POST(new Request('https://entropy.example/internal/community-sync', { method: 'POST',
+      headers: { 'content-type': 'application/json', ...headers }, body }));
+    assert.equal(response.status, status);
+  }
+  assert.equal(control().revision, 0); assert.equal(control().daily_attempts, 0);
+});
+test('lease and attempt are durable before provider access; a second tick or edit is blocked', { timeout: 5000 }, async () => {
+  fakeKey(); let value = await store.getWorkbench(); value = await store.setCollector(true, value.revision);
+  let release; let enteredResolve;
+  const entered = new Promise(resolve => { enteredResolve = resolve; });
+  globalThis.fetch = async () => { enteredResolve(); return new Promise(resolve => { release = () => resolve(emptyProvider()); }); };
+  const pending = store.runSync(value.revision, true); await entered;
+  assert.equal(control().daily_attempts, 1); assert.ok(control().lease_token); assert.ok(control().lease_until > Date.now());
+  await assert.rejects(store.runSync(), error => error.code === 'SYNC_BUSY');
+  await assert.rejects(store.saveState(value.state, value.revision, 'owner'), error => error.code === 'SYNC_BUSY');
+  release(); const completed = await pending;
+  assert.equal(completed.revision, value.revision + 1); assert.equal(control().lease_token, null); assert.equal(control().daily_attempts, 1);
+  assert.equal(completed.sync.attemptBudget.count, 1); assert.ok(completed.sync.lastSuccessAt);
+});
+test('daily limit rejects a tick before network access and survives another process load', async () => {
+  fakeKey(); let value = await store.getWorkbench(); value = await store.setCollector(true, value.revision);
+  const today = new Date().toISOString().slice(0, 10);
+  sqlite.prepare('UPDATE entropy_control SET daily_date=?,daily_attempts=288').run(today);
+  let calls = 0; globalThis.fetch = async () => { calls++; return emptyProvider(); };
+  await assert.rejects(store.runSync(value.revision, true), error => error.code === 'DAILY_LIMIT');
+  assert.equal(calls, 0); assert.equal((await store.getWorkbench()).sync.attemptBudget.count, 288); assert.equal(control().daily_attempts, 288);
+});
+test('regular cloud collection allows the same 65-second provider deadline as historical collection', async () => {
+  const originalTimeout = AbortSignal.timeout, deadlines = [];
+  AbortSignal.timeout = milliseconds => { deadlines.push(milliseconds); return originalTimeout(milliseconds); };
+  try {
+    fakeKey(); let value = await store.getWorkbench(); value = await store.setCollector(true, value.revision);
+    globalThis.fetch = async () => emptyProvider();
+    await store.runSync(value.revision, true);
+    assert.deepEqual(deadlines, [65000]); assert.equal(control().daily_attempts, 1); assert.equal(control().lease_token, null);
+  } finally { AbortSignal.timeout = originalTimeout; }
+});
+test('an expired worker cannot overwrite moderation saved after its lease expires', { timeout: 5000 }, async () => {
+  fakeKey(); let value = await store.getWorkbench(); value = await store.setCollector(true, value.revision);
+  let release; let enteredResolve;
+  const entered = new Promise(resolve => { enteredResolve = resolve; });
+  globalThis.fetch = async () => { enteredResolve(); return new Promise(resolve => { release = () => resolve(emptyProvider()); }); };
+  const pending = store.runSync(value.revision, true); await entered;
+  sqlite.prepare('UPDATE entropy_control SET lease_until=?').run(Date.now() - 1);
+  const state = structuredClone(value.state);
+  state.bans[value.dataset.authors[0].id] = { reason: 'Newer moderation must survive', at: new Date().toISOString() };
+  const saved = await store.saveState(state, value.revision, 'owner');
+  release(); await assert.rejects(pending, error => error.code === 'CONFLICT');
+  const final = await store.getWorkbench();
+  assert.equal(final.revision, saved.revision); assert.equal(final.state.bans[value.dataset.authors[0].id].reason, 'Newer moderation must survive');
+  assert.equal(control().daily_attempts, 1); assert.equal(control().lease_token, null);
+});
+test('provider 402 pauses with old data retained and counted attempt; errors never expose key', async () => {
+  fakeKey(); let value = await store.getWorkbench(); value = await store.setCollector(true, value.revision);
+  globalThis.fetch = async () => ({ ok: false, status: 402, json: async () => ({ secret: scope.TWITTERAPI_IO_KEY }) });
+  const result = await store.runSync(value.revision, true);
+  assert.equal(result.sync.paused, true); assert.equal(result.sync.lastError.code, 'CREDITS_EXHAUSTED');
+  assert.equal(result.dataset.posts.length, value.dataset.posts.length); assert.equal(result.sync.attemptBudget.count, 1); assert.equal(control().lease_token, null);
+  assert.ok(!JSON.stringify(result).includes(scope.TWITTERAPI_IO_KEY));
+  await assert.rejects(store.runSync(result.revision, true), error => error.code === 'COLLECTOR_PAUSED');
+});
+test('imports require stopped collection and reset checkpoints without resetting durable usage', async () => {
+  fakeKey(); let value = await store.getWorkbench(); value = await store.setCollector(true, value.revision);
+  await assert.rejects(store.importWorkbench({ dataset: value.dataset, expectedRevision: value.revision }), error => error.code === 'COLLECTOR_ACTIVE');
+  value = await store.setCollector(false, value.revision);
+  sqlite.prepare('UPDATE entropy_control SET daily_date=?,daily_attempts=17').run(new Date().toISOString().slice(0, 10));
+  const result = await store.importWorkbench({ dataset: value.dataset, expectedRevision: value.revision });
+  assert.equal(result.sync.enabled, false); assert.deepEqual(result.sync.discovery.pendingWindows, []); assert.equal(result.sync.discovery.coveredThrough, null);
+  assert.equal(result.sync.lastSuccessAt, null); assert.equal(result.sync.attemptBudget.count, 17); assert.equal(control().daily_attempts, 17);
+});
+test('post-proven identity upgrades preserve bans; browser state writes cannot erase the evidence ledger', async () => {
+  let value = await store.getWorkbench();
+  const oldAuthor = value.dataset.authors[0], realId = '1234567890123456789';
+  const state = structuredClone(value.state);
+  state.bans[oldAuthor.id] = { reason: 'Visible reason', internalNote: 'PRIVATE_NOTE', at: new Date().toISOString() };
+  value = await store.saveState(state, value.revision, 'owner');
+  const dataset = structuredClone(value.dataset);
+  dataset.authors.find(a => a.id === oldAuthor.id).id = realId;
+  dataset.posts.filter(p => p.authorId === oldAuthor.id).forEach(p => { p.authorId = realId; });
+  value = await store.importWorkbench({ dataset, expectedRevision: value.revision });
+  assert.equal(value.state.bans[realId].reason, 'Visible reason'); assert.equal(value.state.bans[realId].internalNote, 'PRIVATE_NOTE');
+  assert.ok(value.state.identityEvidence[realId]);
+  const tampered = structuredClone(value.state); tampered.identityEvidence = {};
+  const result = await store.saveState(tampered, value.revision, 'owner');
+  assert.deepEqual(result.state.identityEvidence, value.state.identityEvidence);
+});
+test('large Unicode records are sharded below row limits and reassembled exactly', async () => {
+  const text = 'x'.repeat(127998) + '🙂' + '語'.repeat(200000);
+  const chunks = store.splitPayload(text);
+  assert.ok(chunks.length > 1); assert.equal(JSON.parse(chunks.join('')), text);
+  assert.ok(chunks.every(chunk => new TextEncoder().encode(chunk).byteLength < 512000));
+  let value = await store.getWorkbench(); const dataset = structuredClone(value.dataset); dataset.posts[0].body = text;
+  value = await store.importWorkbench({ dataset, expectedRevision: value.revision });
+  assert.equal(value.dataset.posts.find(p => p.id === dataset.posts[0].id).body, text);
+  const max = sqlite.prepare('SELECT max(length(CAST(payload AS BLOB))) n FROM entropy_records').get(); assert.ok(max.n < 512000);
+});
+test('browser APIs require trusted identity, JSON and same-origin writes before touching storage', async () => {
+  const anonymous = await api.GET(new Request('https://entropy.example/api/workbench'), context('workbench')); assert.equal(anonymous.status, 401);
+  assert.equal(sqlite.prepare('SELECT count(*) n FROM entropy_control').get().n, 0);
+  const crossSite = await api.POST(browserRequest('collector', { enabled: true, expectedRevision: 0 }, { origin: 'https://evil.example' }), context('collector')); assert.equal(crossSite.status, 403);
+  const wrongType = await api.POST(browserRequest('collector', {}, { 'content-type': 'text/plain' }), context('collector')); assert.equal(wrongType.status, 415);
+  const oversized = await api.POST(browserRequest('collector', {}, { 'content-length': String(16 * 1024 * 1024) }), context('collector')); assert.equal(oversized.status, 413);
+  const ok = await api.GET(new Request('https://entropy.example/api/workbench', { headers: { 'oai-authenticated-user-id': 'owner' } }), context('workbench'));
+  assert.equal(ok.status, 200); assert.equal((await ok.json()).mode, 'cloud');
+});
+test('manual sync requires enabled collector; unversioned browser mutations are rejected', async () => {
+  fakeKey(); const value = await store.getWorkbench();
+  const disabled = await api.POST(browserRequest('sync', { expectedRevision: value.revision }), context('sync'));
+  assert.equal(disabled.status, 400); assert.equal((await disabled.json()).error.code, 'COLLECTOR_DISABLED');
+  const missingVersion = await api.POST(browserRequest('sync', {}), context('sync')); assert.equal(missingVersion.status, 400);
+  assert.equal(control().daily_attempts, 0);
+});
+test('MCP discovery is supported; tools disclose status without notes, keys or auto enabling', async () => {
+  fakeKey(); let value = await store.getWorkbench();
+  const state = structuredClone(value.state); state.bans[value.dataset.authors[0].id] = { reason: 'Public reason', internalNote: 'MCP_PRIVATE_NOTE', at: new Date().toISOString() };
+  value = await store.saveState(state, value.revision, 'owner');
+  const call = async (method, params) => mcp.POST(new Request('https://entropy.example/mcp', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) }));
+  const discovery = await (await call('server/discover')).json(); assert.deepEqual(discovery.result.supportedVersions, ['2026-07-28']);
+  const listed = await (await call('tools/list')).json(); assert.deepEqual(listed.result.tools.map(t => t.name), ['entropy_status', 'entropy_sync']);
+  const response = await (await call('tools/call', { name: 'entropy_sync', arguments: {} })).json();
+  assert.equal(response.result.structuredContent.sync.enabled, false); assert.equal(control().daily_attempts, 0);
+  assert.ok(!JSON.stringify(response).includes('MCP_PRIVATE_NOTE')); assert.ok(!JSON.stringify(response).includes(scope.TWITTERAPI_IO_KEY));
+});
+function internalRequest(body = '{}', headers = {}) {
+  return new Request('https://entropy.example/internal/sync', { method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-entropy-update': '1', ...headers }, body });
+}
+test('private service writer rejects malformed intent, origin, type and bounded JSON before storage', async () => {
+  const cases = [
+    [internalRequest('{}', { 'x-entropy-update': '' }), 403],
+    [internalRequest('{}', { origin: 'https://evil.example' }), 403],
+    [internalRequest('{}', { 'content-type': 'text/plain' }), 415],
+    [internalRequest('{}', { 'content-type': 'application/json-not-json' }), 415],
+    [internalRequest('{}', { 'content-length': '1025' }), 413],
+    [internalRequest(' '.repeat(1025)), 413],
+    [internalRequest('not json'), 400],
+    [internalRequest('null'), 400],
+    [internalRequest('[]'), 400],
+    [internalRequest('{"force":true}'), 400],
+    [internalRequest('{"action":"unknown"}'), 400],
+    [internalRequest('{"action":"catchup","force":true}'), 400],
+  ];
+  for (const [request, status] of cases) {
+    const result = await internal.POST(request); assert.equal(result.status, status);
+    assert.ok((await result.json()).error.code);
+  }
+  assert.equal(sqlite.prepare('SELECT count(*) n FROM entropy_control').get().n, 0);
+});
+test('private service status and disabled ticks whitelist summary without auto enabling or revealing notes', async () => {
+  fakeKey(); let value = await store.getWorkbench();
+  const state = structuredClone(value.state);
+  state.bans[value.dataset.authors[0].id] = { reason: 'Public decision', internalNote: 'INTERNAL_ROUTE_PRIVATE_NOTE', at: new Date().toISOString() };
+  value = await store.saveState(state, value.revision, 'owner');
+  for (const result of [await internal.GET(), await internal.POST(internalRequest())]) {
+    assert.equal(result.status, 200);
+    const payload = await result.json(), text = JSON.stringify(payload);
+    assert.deepEqual(Object.keys(payload).sort(), ['authors', 'connection', 'mode', 'posts', 'revision', 'sync', 'updatedAt']);
+    assert.equal(payload.posts, 24); assert.equal(payload.sync.enabled, false);
+    assert.ok(!text.includes(scope.TWITTERAPI_IO_KEY)); assert.ok(!text.includes('INTERNAL_ROUTE_PRIVATE_NOTE'));
+    assert.ok(!('dataset' in payload)); assert.ok(!('state' in payload));
+  }
+  assert.equal(control().daily_attempts, 0);
+});
+test('private service writer accepts absent or same origin, performs one due tick and preserves next due time', async () => {
+  fakeKey(); let value = await store.getWorkbench(); value = await store.setCollector(true, value.revision);
+  let calls = 0; globalThis.fetch = async () => { calls++; return emptyProvider(); };
+  const first = await internal.POST(internalRequest()); assert.equal(first.status, 200);
+  const payload = await first.json(); assert.equal(calls, 1); assert.equal(payload.sync.attemptBudget.count, 1); assert.ok(payload.sync.lastSuccessAt);
+  const again = await internal.POST(internalRequest('{}', { origin: 'https://entropy.example' })); assert.equal(again.status, 200);
+  const unchanged = await again.json(); assert.equal(calls, 1); assert.equal(unchanged.revision, payload.revision);
+  assert.equal(unchanged.sync.nextRunAt, payload.sync.nextRunAt); assert.equal(control().daily_attempts, 1);
+});
+test('private service writer reports redacted server errors and does not resume paused collection', async () => {
+  fakeKey(); let value = await store.getWorkbench(); value = await store.setCollector(true, value.revision);
+  globalThis.fetch = async () => ({ ok: false, status: 402 });
+  const first = await internal.POST(internalRequest()); assert.equal(first.status, 200);
+  const paused = await first.json(); assert.equal(paused.sync.paused, true); assert.equal(paused.sync.lastError.code, 'CREDITS_EXHAUSTED');
+  const next = await internal.POST(internalRequest()); assert.equal(next.status, 200); assert.equal((await next.json()).sync.paused, true);
+  assert.equal(control().daily_attempts, 1);
+  scope.DB = { prepare() { throw new Error(scope.TWITTERAPI_IO_KEY); } };
+  const unavailable = await internal.GET(); assert.equal(unavailable.status, 503);
+  const text = await unavailable.text(); assert.ok(text.includes('STORE_UNAVAILABLE')); assert.ok(!text.includes(scope.TWITTERAPI_IO_KEY));
+});
+
+test('small edits write only changed rows even with thousands of stored posts', async () => {
+  let value = await store.getWorkbench(); const dataset = structuredClone(value.dataset), template = dataset.posts[0];
+  dataset.posts.push(...Array.from({ length: 2500 }, (_, i) => ({ ...template, id: 'sample:scale:' + i })));
+  value = await store.importWorkbench({ dataset, expectedRevision: value.revision });
+  const generation = control().generation;
+  const rowsBefore = sqlite.prepare('SELECT count(*) n FROM entropy_records WHERE generation=?').get(generation).n;
+  batchSizes = [];
+  const state = structuredClone(value.state);
+  state.bans[value.dataset.authors[0].id] = { reason: 'Manual review', at: new Date().toISOString() };
+  const saved = await store.saveState(state, value.revision, 'owner');
+  assert.equal(saved.dataset.posts.length, 2524); assert.equal(control().generation, generation);
+  assert.deepEqual(batchSizes, [2]); // One decision record plus final atomic CAS.
+  assert.equal(sqlite.prepare('SELECT count(*) n FROM entropy_records WHERE generation=?').get(generation).n, rowsBefore + 1);
+});
+test('incremental writes remove old chunks and deleted rows without leaving partial records', async () => {
+  let value = await store.getWorkbench(), dataset = structuredClone(value.dataset);
+  const postId = dataset.posts[0].id, removedPostId = dataset.posts[1].id;
+  dataset.posts[0].body = '語'.repeat(300000);
+  value = await store.importWorkbench({ dataset, expectedRevision: value.revision });
+  const generation = control().generation;
+  assert.ok(sqlite.prepare('SELECT count(*) n FROM entropy_records WHERE generation=? AND kind=? AND record_id=?').get(generation, 'post', postId).n > 1);
+  dataset = structuredClone(value.dataset); dataset.posts.find(p => p.id === postId).body = 'Shortened';
+  dataset.posts = dataset.posts.filter(p => p.id !== removedPostId);
+  value = await store.importWorkbench({ dataset, expectedRevision: value.revision });
+  assert.equal(control().generation, generation);
+  assert.equal(sqlite.prepare('SELECT count(*) n FROM entropy_records WHERE generation=? AND kind=? AND record_id=?').get(generation, 'post', postId).n, 1);
+  assert.equal(sqlite.prepare('SELECT count(*) n FROM entropy_records WHERE generation=? AND kind=? AND record_id=?').get(generation, 'post', removedPostId).n, 0);
+  assert.equal(value.dataset.posts.find(p => p.id === postId).body, 'Shortened');
+});
+test('a stale incremental batch cannot resurrect a decision deleted by a newer edit', { timeout: 5000 }, async () => {
+  let value = await store.getWorkbench(); const id = value.dataset.authors[0].id;
+  const state = structuredClone(value.state); state.bans[id] = { reason: 'Initial reason', at: new Date().toISOString() };
+  value = await store.saveState(state, value.revision, 'owner');
+  let release, enteredResolve;
+  const entered = new Promise(resolve => { enteredResolve = resolve; });
+  beforeBatch = async () => { beforeBatch = null; enteredResolve(); await new Promise(resolve => { release = resolve; }); };
+  const staleState = structuredClone(value.state); staleState.bans[id].reason = 'Stale replacement';
+  const stale = store.saveState(staleState, value.revision, 'owner'); await entered;
+  const freshState = structuredClone(value.state); delete freshState.bans[id];
+  const fresh = await store.saveState(freshState, value.revision, 'owner');
+  release(); await assert.rejects(stale, error => error.code === 'CONFLICT');
+  const final = await store.getWorkbench(); assert.equal(final.revision, fresh.revision); assert.equal(final.state.bans[id], undefined);
+  assert.equal(sqlite.prepare('SELECT count(*) n FROM entropy_records WHERE generation=? AND kind=? AND record_id=?').get(control().generation, 'state:bans', id).n, 0);
+});
+
+function backfillRequest(payload, headers = {}) {
+  return new Request('https://entropy.example/internal/backfill', { method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-entropy-update': '1', ...headers },
+    body: typeof payload === 'string' ? payload : JSON.stringify(payload) });
+}
+const historicalRange = (now = Date.now(), requestLimit = 250) => ({
+  start: new Date(now - 2 * 86400000).toISOString(), endExclusive: new Date(now - 1000).toISOString(), requestLimit,
+});
+const emptySearchPage = () => ({ ok: true, status: 200, json: async () => ({ status: 'success', tweets: [], has_next_page: false, next_cursor: '' }) });
+test('historical jobs require a key and enabled collection, validate a fixed cutoff, and start idempotently without paid calls', async () => {
+  const range = historicalRange(); const value = await store.getWorkbench();
+  await assert.rejects(store.startBackfill(range), error => error.code === 'KEY_REQUIRED');
+  fakeKey(); await assert.rejects(store.startBackfill(range), error => error.code === 'COLLECTOR_DISABLED');
+  await store.setCollector(true, value.revision);
+  await assert.rejects(store.startBackfill({ ...range, endExclusive: new Date(Date.now() + 60000).toISOString() }), error => error.code === 'INVALID_INPUT');
+  await assert.rejects(store.startBackfill({ ...range, requestLimit: 1001 }), error => error.code === 'INVALID_INPUT');
+  const first = await store.startBackfill(range), again = await store.startBackfill(range);
+  assert.equal(again.revision, first.revision); assert.equal(again.sync.backfill.id, first.sync.backfill.id);
+  assert.equal(first.sync.backfill.status, 'running'); assert.equal(first.sync.backfill.requestCount, 0);
+  assert.equal(first.sync.backfill.totalRequests, 0); assert.equal(control().daily_attempts, 0);
+  assert.equal((await store.getStatus()).sync.backfill.nextStepAt, first.sync.backfill.nextStepAt);
+});
+test('accelerated steps preserve their own progress while hourly discovery keeps the latest slot', async () => {
+  const clock = Date.now, base = Date.now(); let now = base;
+  Date.now = () => now;
+  try {
+    fakeKey(); let value = await store.getWorkbench(); value = await store.setCollector(true, value.revision);
+    value = await store.startBackfill(historicalRange(base));
+    let calls = 0;
+    globalThis.fetch = async url => {
+      calls++; assert.equal(control().daily_attempts, calls); assert.ok(control().lease_token); assert.ok(control().lease_until > now);
+      if (calls === 1) {
+        assert.equal(new URL(url).pathname, '/twitter/tweet/advanced_search');
+        assert.ok(new URL(url).searchParams.get('query').startsWith('@entropyIO since_time:'));
+      } else assert.equal(new URL(url).pathname, '/twitter/user/mentions');
+      return emptySearchPage();
+    };
+    const early = await store.runBackfill(); assert.equal(early.revision, value.revision); assert.ok(Date.parse(early.sync.backfill.nextStepAt) > now);
+    assert.equal(calls, 0); assert.equal(control().daily_attempts, 0);
+    now += 6000; const first = await store.runBackfill();
+    assert.equal(calls, 1); assert.equal(first.sync.backfill.requestCount, 1); assert.equal(first.sync.backfill.successfulPages, 1);
+    assert.equal(control().lease_token, null); assert.equal(first.sync.attemptBudget.count, 1);
+    const tooSoon = await store.runBackfill(); assert.equal(calls, 1); assert.equal(tooSoon.revision, first.revision);
+    // An active historic job cannot replace the new-post hourly search.
+    now += 6000; const hourly = await store.runSync();
+    assert.equal(calls, 2); assert.equal(hourly.sync.backfill.requestCount, 1); assert.equal(hourly.sync.attemptBudget.count, 2);
+    assert.ok(hourly.sync.hourly.lastSuccessAt); assert.ok(hourly.sync.hourly.lastAttemptAt);
+  } finally { Date.now = clock; }
+});
+test('historical daily cap and stopped jobs never access the provider; only an explicit limit extension resumes', async () => {
+  const clock = Date.now, base = Date.now(); let now = base;
+  Date.now = () => now;
+  try {
+    fakeKey(); let value = await store.getWorkbench(); value = await store.setCollector(true, value.revision);
+    const range = historicalRange(base, 1); value = await store.startBackfill(range); now += 6000;
+    sqlite.prepare('UPDATE entropy_control SET daily_date=?,daily_attempts=288').run(new Date(now).toISOString().slice(0, 10));
+    await assert.rejects(store.runBackfill(), error => error.code === 'DAILY_LIMIT');
+    sqlite.prepare('UPDATE entropy_control SET daily_attempts=0').run();
+    let calls = 0; globalThis.fetch = async () => { calls++; return emptySearchPage(); };
+    const limited = await store.runBackfill(); assert.equal(limited.sync.backfill.status, 'request-limit'); assert.equal(calls, 1);
+    now += 6000; const stopped = await store.runBackfill(); assert.equal(stopped.sync.backfill.status, 'request-limit'); assert.equal(calls, 1);
+    const resumed = await store.startBackfill({ ...range, requestLimit: 2 });
+    assert.equal(resumed.sync.backfill.status, 'running'); assert.equal(resumed.sync.backfill.requestCount, 1);
+    assert.equal(control().daily_attempts, 1); now += 6000;
+    await store.runBackfill(); assert.equal(calls, 2);
+  } finally { Date.now = clock; }
+});
+test('historical auth failures pause without leaking response contents or restarting on hourly ticks', async () => {
+  const clock = Date.now, base = Date.now(); let now = base;
+  Date.now = () => now;
+  try {
+    fakeKey(); let value = await store.getWorkbench(); value = await store.setCollector(true, value.revision);
+    await store.startBackfill(historicalRange(base)); now += 6000;
+    let calls = 0; globalThis.fetch = async () => { calls++; return { ok: false, status: 402, json: async () => ({ secret: scope.TWITTERAPI_IO_KEY }) }; };
+    const paused = await store.runBackfill(); assert.equal(paused.sync.paused, true); assert.equal(paused.sync.backfill.status, 'paused');
+    assert.equal(paused.sync.backfill.requestCount, 1); assert.equal(paused.sync.backfill.lastError.code, 'CREDITS_EXHAUSTED');
+    assert.ok(!JSON.stringify(paused).includes(scope.TWITTERAPI_IO_KEY)); assert.equal(control().daily_attempts, 1);
+    await assert.rejects(store.runBackfill(), error => error.code === 'COLLECTOR_PAUSED');
+    await store.runSync(); assert.equal(calls, 1);
+  } finally { Date.now = clock; }
+});
+test('historical route validates bounded explicit intent before storage and exposes only a summary', async () => {
+  for (const [request, status] of [
+    [backfillRequest({ action: 'step' }, { 'x-entropy-update': '' }), 403],
+    [backfillRequest({ action: 'step' }, { origin: 'https://evil.example' }), 403],
+    [backfillRequest({ action: 'step' }, { 'content-type': 'application/json-invalid' }), 415],
+    [backfillRequest(' '.repeat(2049)), 413],
+    [backfillRequest('null'), 400], [backfillRequest({ action: 'step', force: true }), 400],
+    [backfillRequest({ action: 'start', unexpected: true }), 400],
+  ]) assert.equal((await backfill.POST(request)).status, status);
+  assert.equal(sqlite.prepare('SELECT count(*) n FROM entropy_control').get().n, 0);
+  fakeKey(); let value = await store.getWorkbench(); const state = structuredClone(value.state);
+  state.bans[value.dataset.authors[0].id] = { reason: 'Visible reason', internalNote: 'PRIVATE_BACKFILL_NOTE', at: new Date().toISOString() };
+  value = await store.saveState(state, value.revision, 'owner'); await store.setCollector(true, value.revision);
+  const started = await backfill.POST(backfillRequest({ action: 'start', ...historicalRange() })); assert.equal(started.status, 200);
+  for (const result of [started, await backfill.GET()]) {
+    const payload = await result.json(), text = JSON.stringify(payload);
+    assert.deepEqual(Object.keys(payload).sort(), ['authors', 'connection', 'mode', 'posts', 'revision', 'sync', 'updatedAt']);
+    assert.ok(payload.sync.backfill.nextStepAt); assert.ok(!text.includes(scope.TWITTERAPI_IO_KEY)); assert.ok(!text.includes('PRIVATE_BACKFILL_NOTE'));
+    assert.ok(!text.includes('Visible reason')); assert.ok(!('dataset' in payload)); assert.ok(!('state' in payload));
+  }
+  assert.equal(control().daily_attempts, 0);
+});
+test('explicit cancellation works without a key, preserves progress and costs, and never enables collection', async () => {
+  const clock = Date.now, base = Date.now(); let now = base;
+  Date.now = () => now;
+  try {
+    const initial = await store.cancelBackfill(); assert.equal(initial.sync.enabled, false); assert.equal(initial.revision, 0);
+    fakeKey(); let value = await store.setCollector(true, initial.revision);
+    const range = historicalRange(base, 1); value = await store.startBackfill(range);
+    now += 6000; globalThis.fetch = async () => emptySearchPage(); value = await store.runBackfill();
+    const before = structuredClone(value.sync.backfill);
+    value = await store.setCollector(false, value.revision); delete scope.TWITTERAPI_IO_KEY;
+    const cancelled = await store.cancelBackfill(value.revision);
+    assert.equal(cancelled.sync.enabled, false); assert.equal(cancelled.sync.backfill.status, 'cancelled');
+    for (const field of ['requestCount', 'requestLimit', 'successfulPages', 'addedPosts', 'pendingWindows', 'completedRanges', 'gaps']) assert.deepEqual(cancelled.sync.backfill[field], before[field]);
+    assert.equal(cancelled.sync.backfill.nextAttemptAt, null); assert.ok(cancelled.sync.backfill.cancelledAt);
+    assert.equal(control().daily_attempts, 1); assert.equal(cancelled.sync.attemptBudget.count, 1);
+    const again = await store.cancelBackfill(cancelled.revision); assert.equal(again.revision, cancelled.revision);
+    await assert.rejects(store.cancelBackfill(value.revision), error => error.code === 'CONFLICT');
+    await store.runSync(); assert.equal(control().daily_attempts, 1);
+  } finally { Date.now = clock; }
+});
+test('cancellation respects a live lease and fences a worker after expiry without losing its reserved attempt', { timeout: 5000 }, async () => {
+  const clock = Date.now, base = Date.now(); let now = base;
+  Date.now = () => now;
+  try {
+    fakeKey(); let value = await store.getWorkbench(); value = await store.setCollector(true, value.revision);
+    value = await store.startBackfill(historicalRange(base)); now += 6000;
+    let release, enteredResolve;
+    const entered = new Promise(resolve => { enteredResolve = resolve; });
+    globalThis.fetch = async () => { enteredResolve(); return new Promise(resolve => { release = () => resolve(emptySearchPage()); }); };
+    const pending = store.runBackfill(); await entered;
+    await assert.rejects(store.cancelBackfill(value.revision), error => error.code === 'SYNC_BUSY');
+    assert.equal(control().daily_attempts, 1);
+    sqlite.prepare('UPDATE entropy_control SET lease_until=?').run(now - 1);
+    const cancelled = await store.cancelBackfill(value.revision);
+    release(); await assert.rejects(pending, error => error.code === 'CONFLICT');
+    const final = await store.getWorkbench(); assert.equal(final.revision, cancelled.revision); assert.equal(final.sync.backfill.status, 'cancelled');
+    assert.equal(control().daily_attempts, 1); assert.equal(control().lease_token, null);
+  } finally { Date.now = clock; }
+});
+test('method changes require cancellation and retain only five safe job summaries', async () => {
+  fakeKey(); let value = await store.getWorkbench(); value = await store.setCollector(true, value.revision);
+  const range = historicalRange();
+  await assert.rejects(store.startBackfill({ ...range, method: 'unknown' }), error => error.code === 'INVALID_INPUT');
+  value = await store.startBackfill({ ...range, method: 'search' }); const firstId = value.sync.backfill.id;
+  await assert.rejects(store.startBackfill({ ...range, method: 'mentions' }), error => error.code === 'INVALID_INPUT');
+  value = await store.cancelBackfill(value.revision);
+  const cancelledId = value.sync.backfill.id;
+  value = await store.startBackfill({ ...range, method: 'mentions' });
+  assert.equal(value.sync.backfill.method, 'mentions'); assert.notEqual(value.sync.backfill.id, firstId);
+  assert.equal(value.sync.backfillHistory.length, 1); assert.equal(value.sync.backfillHistory[0].id, cancelledId);
+  assert.equal(value.sync.backfillHistory[0].status, 'cancelled');
+  assert.ok(!('pendingWindows' in value.sync.backfillHistory[0])); assert.ok(!('lastError' in value.sync.backfillHistory[0]));
+  for (let i = 1; i <= 6; i++) {
+    value = await store.cancelBackfill(value.revision);
+    value = await store.startBackfill({ ...range, start: new Date(Date.parse(range.start) - i * 1000).toISOString(), method: 'mentions' });
+  }
+  assert.equal(value.sync.backfillHistory.length, 5); assert.equal(value.sync.enabled, true); assert.equal(control().daily_attempts, 0);
+  assert.ok(value.sync.backfillHistory.every(job => job.status === 'cancelled' && Array.isArray(job.gaps)));
+  const cancelled = await backfill.POST(backfillRequest({ action: 'cancel', expectedRevision: value.revision }));
+  assert.equal(cancelled.status, 200); assert.equal((await cancelled.json()).sync.backfill.status, 'cancelled');
+  const malformed = await backfill.POST(backfillRequest({ action: 'cancel', force: true })); assert.equal(malformed.status, 400);
+});
+
+const hourlyClockStart = () => Math.floor(Date.now() / 3600000) * 3600000 + 20 * 60000;
+function discoveryTweet(now, id = '1900000000000000001', age = 60000) {
+  return { id, text: 'A useful @entropyIO post.', createdAt: new Date(now - age).toISOString(),
+    author: { id: '1000000000000000001', userName: 'newcreator', name: 'New Creator', followers: 10 },
+    viewCount: 100, likeCount: 2, retweetCount: 0, quoteCount: 0, replyCount: 1, bookmarkCount: 0 };
+}
+function discoveryResponse(tweets, hasNextPage = false, cursor = '') {
+  return { ok: true, status: 200, json: async () => ({ status: 'success', tweets, has_next_page: hasNextPage, next_cursor: cursor }) };
+}
+function patchSyncFixture(patch) {
+  const row = sqlite.prepare('SELECT payload FROM entropy_records WHERE generation=? AND kind=? AND record_id=? AND chunk_index=0').get(control().generation, 'sync', 'main');
+  const sync = { ...JSON.parse(row.payload), ...patch };
+  sqlite.prepare('UPDATE entropy_records SET payload=? WHERE generation=? AND kind=? AND record_id=? AND chunk_index=0').run(JSON.stringify(sync), control().generation, 'sync', 'main');
+}
+test('hourly discovery checks new mentions even with a metrics backlog and preserves moderation', async () => {
+  const clock = Date.now; let now = hourlyClockStart(); Date.now = () => now;
+  try {
+    fakeKey(); let value = await store.getWorkbench();
+    const state = structuredClone(value.state), authorId = value.dataset.authors[0].id;
+    state.bans[authorId] = { reason: 'Existing public reason', internalNote: 'PRIVATE_STAYS_PRIVATE', at: new Date(now).toISOString() };
+    value = await store.saveState(state, value.revision, 'owner'); value = await store.setCollector(true, value.revision);
+    const pendingIds = value.dataset.posts.map(post => post.id);
+    patchSyncFixture({ phase: 'refresh', refresh: { pendingIds, cycleStartedAt: new Date(now).toISOString() } });
+    let calls = 0;
+    globalThis.fetch = async url => {
+      calls++; const target = new URL(url); assert.equal(target.pathname, '/twitter/user/mentions');
+      assert.equal(target.searchParams.get('userName'), 'entropyIO');
+      assert.ok(Number(target.searchParams.get('untilTime')) * 1000 <= now);
+      return discoveryResponse([discoveryTweet(now)]);
+    };
+    const result = await store.runSync(undefined, true);
+    assert.equal(calls, 1); assert.equal(result.dataset.posts.length, 25); assert.deepEqual(result.sync.refresh.pendingIds, pendingIds);
+    assert.equal(result.state.bans[authorId].reason, 'Existing public reason');
+    assert.equal(result.state.bans[authorId].internalNote, 'PRIVATE_STAYS_PRIVATE');
+    assert.equal(result.sync.collectionHealth.policy, 'new-mentions-first'); assert.equal(result.sync.collectionHealth.freshness, 'current');
+    assert.equal(result.sync.hourly.lastSuccessAt, new Date(now).toISOString());
+    now += 2 * 3600000; assert.equal((await store.getStatus()).sync.collectionHealth.freshness, 'stale');
+  } finally { Date.now = clock; }
+});
+test('catch-up durably reserves one continuation page without moving the next hourly discovery deadline', async () => {
+  const clock = Date.now; let now = hourlyClockStart(); Date.now = () => now;
+  try {
+    fakeKey(); let value = await store.getWorkbench(); value = await store.setCollector(true, value.revision);
+    globalThis.fetch = async () => discoveryResponse([discoveryTweet(now)], true, 'next-A');
+    const latest = await store.runSync(undefined, true), nextRun = latest.sync.hourly.nextRunAt;
+    assert.ok(latest.sync.hourly.pendingWindows.length); const lastSuccess = latest.sync.hourly.lastSuccessAt;
+    let calls = 0;
+    globalThis.fetch = async url => {
+      calls++; assert.equal(new URL(url).searchParams.get('cursor'), 'next-A');
+      assert.equal(control().daily_attempts, 2); assert.ok(control().lease_token);
+      return discoveryResponse([discoveryTweet(now, '1900000000000000002', 180000)]);
+    };
+    const early = await store.runHourlyCatchup(); assert.equal(early.revision, latest.revision); assert.equal(calls, 0);
+    now += 6000; const result = await store.runHourlyCatchup();
+    assert.equal(calls, 1); assert.equal(result.dataset.posts.length, 26); assert.equal(result.sync.hourly.pendingWindows.length, 0);
+    assert.equal(result.sync.hourly.nextRunAt, nextRun); assert.equal(result.sync.nextRunAt, nextRun);
+    assert.equal(result.sync.hourly.lastSuccessAt, lastSuccess); assert.ok(result.sync.hourly.catchupLastSuccessAt);
+    assert.equal(control().lease_token, null); assert.equal(control().daily_attempts, 2);
+    await store.runHourlyCatchup(); assert.equal(calls, 1);
+  } finally { Date.now = clock; }
+});
+test('catch-up serializes with new discovery and never exposes its lease token', { timeout: 5000 }, async () => {
+  const clock = Date.now; let now = hourlyClockStart(); Date.now = () => now;
+  try {
+    fakeKey(); let value = await store.getWorkbench(); value = await store.setCollector(true, value.revision);
+    globalThis.fetch = async () => discoveryResponse([discoveryTweet(now)], true, 'next-A');
+    value = await store.runSync(undefined, true); now += 6000;
+    let release, enteredResolve; const entered = new Promise(resolve => { enteredResolve = resolve; });
+    globalThis.fetch = async () => { enteredResolve(); return new Promise(resolve => { release = () => resolve(discoveryResponse([])); }); };
+    const pending = store.runHourlyCatchup(); await entered;
+    const status = await store.getStatus(); assert.ok(Date.parse(status.sync.collectorBusyUntil) > now);
+    assert.ok(!JSON.stringify(status).includes(control().lease_token));
+    await assert.rejects(store.runSync(undefined, true), error => error.code === 'SYNC_BUSY');
+    await assert.rejects(store.saveState(value.state, value.revision, 'owner'), error => error.code === 'SYNC_BUSY');
+    release(); await pending; assert.equal(control().lease_token, null); assert.equal(control().daily_attempts, 2);
+  } finally { Date.now = clock; }
+});
+test('maintenance preserves a daily allowance for fresh discovery and cannot take its due slot', async () => {
+  const clock = Date.now; let now = hourlyClockStart(); Date.now = () => now;
+  try {
+    fakeKey(); let value = await store.getWorkbench(); value = await store.setCollector(true, value.revision);
+    globalThis.fetch = async () => discoveryResponse([discoveryTweet(now)], true, 'next-A');
+    value = await store.runSync(undefined, true); now += 6000;
+    sqlite.prepare('UPDATE entropy_control SET daily_date=?,daily_attempts=264').run(new Date(now).toISOString().slice(0, 10));
+    let calls = 0; globalThis.fetch = async () => { calls++; return discoveryResponse([]); };
+    await assert.rejects(store.runHourlyCatchup(), error => error.code === 'FRESH_DISCOVERY_RESERVE');
+    await assert.rejects(store.runMetricsRefresh(), error => error.code === 'FRESH_DISCOVERY_RESERVE');
+    assert.equal(calls, 0); assert.equal(control().daily_attempts, 264);
+    const fresh = await store.runSync(undefined, true); assert.equal(calls, 1); assert.equal(control().daily_attempts, 265);
+    now = Date.parse(fresh.sync.hourly.nextRunAt) + 1000;
+    const before = control().daily_attempts; await store.runHourlyCatchup(); await store.runMetricsRefresh();
+    assert.equal(calls, 1); assert.equal(control().daily_attempts, before);
+  } finally { Date.now = clock; }
+});
+test('metrics maintenance adapts failed batches and keeps every queued ID without delaying fresh discovery', async () => {
+  const clock = Date.now; let now = hourlyClockStart(); Date.now = () => now;
+  try {
+    fakeKey(); let value = await store.getWorkbench(); value = await store.setCollector(true, value.revision);
+    const ids = new Set(value.dataset.posts.map(post => post.id)), requestedSizes = [];
+    for (let attempt = 0; attempt < 2; attempt++) {
+      globalThis.fetch = async url => { assert.equal(new URL(url).pathname, '/twitter/user/mentions'); return discoveryResponse([]); };
+      value = await store.runSync(undefined, true);
+      const latest = structuredClone(value.sync.hourly), nextRun = value.sync.nextRunAt; now += 6000;
+      globalThis.fetch = async url => {
+        const target = new URL(url); assert.equal(target.pathname, '/twitter/tweets');
+        requestedSizes.push(target.searchParams.get('tweet_ids').split(',').length);
+        throw new DOMException('Do not expose provider text or the key', 'TimeoutError');
+      };
+      value = await store.runMetricsRefresh();
+      assert.equal(value.sync.metricsRefresh.lastError.diagnosticCode, 'REQUEST_TIMEOUT');
+      assert.equal(value.sync.metricsRefresh.batchSize, attempt ? 5 : 10);
+      assert.equal(value.sync.metricsRefresh.pendingCount, ids.size);
+      assert.deepEqual(new Set(value.sync.refresh.pendingIds), ids); assert.deepEqual(value.sync.hourly, latest);
+      assert.equal(value.sync.nextRunAt, nextRun); assert.equal(value.dataset.posts.length, ids.size);
+      assert.equal(value.sync.paused, false); assert.ok(!JSON.stringify(value).includes(scope.TWITTERAPI_IO_KEY));
+      now = Date.parse(value.sync.hourly.nextRunAt) + 1000;
+    }
+    assert.deepEqual(requestedSizes, [20, 10]);
+  } finally { Date.now = clock; }
+});
+test('private maintenance actions remain disabled without collection and whitelist response contents', async () => {
+  fakeKey(); let value = await store.getWorkbench(); const state = structuredClone(value.state);
+  state.bans[value.dataset.authors[0].id] = { reason: 'Public decision', internalNote: 'MAINTENANCE_PRIVATE_NOTE', at: new Date().toISOString() };
+  await store.saveState(state, value.revision, 'owner');
+  for (const action of ['catchup', 'metrics']) {
+    const response = await internal.POST(internalRequest(JSON.stringify({ action }))); assert.equal(response.status, 200);
+    const payload = await response.json(), text = JSON.stringify(payload); assert.equal(payload.sync.enabled, false);
+    assert.ok(!text.includes('MAINTENANCE_PRIVATE_NOTE')); assert.ok(!text.includes(scope.TWITTERAPI_IO_KEY));
+    assert.ok(!('dataset' in payload)); assert.ok(!('state' in payload));
+  }
+  assert.equal(control().daily_attempts, 0);
+});
+test('successful metrics maintenance advances only its selected IDs and preserves the hourly discovery status', async () => {
+  const clock = Date.now; let now = hourlyClockStart(); Date.now = () => now;
+  try {
+    fakeKey(); let value = await store.getWorkbench(); value = await store.setCollector(true, value.revision);
+    globalThis.fetch = async () => discoveryResponse([]); value = await store.runSync(undefined, true);
+    const hourly = structuredClone(value.sync.hourly), nextRun = value.sync.nextRunAt, before = structuredClone(value.dataset);
+    now += 6000;
+    globalThis.fetch = async url => {
+      const target = new URL(url); assert.equal(target.pathname, '/twitter/tweets');
+      assert.equal(target.searchParams.get('tweet_ids').split(',').length, 20);
+      return discoveryResponse([]);
+    };
+    const result = await store.runMetricsRefresh();
+    assert.equal(result.sync.metricsRefresh.lastSuccessAt, new Date(now).toISOString());
+    assert.equal(result.sync.metricsRefresh.lastError, null); assert.equal(result.sync.metricsRefresh.pendingCount, 4);
+    assert.equal(result.sync.refresh.pendingIds.length, 4); assert.deepEqual(result.sync.hourly, hourly);
+    assert.equal(result.sync.nextRunAt, nextRun); assert.equal(result.dataset.posts.length, before.posts.length);
+    for (const post of before.posts) assert.deepEqual(result.dataset.posts.find(value => value.id === post.id).metrics, post.metrics);
+    // A second call this hour is a read/no-op rather than another paid batch.
+    const attempts = control().daily_attempts; now += 6000; await store.runMetricsRefresh(); assert.equal(control().daily_attempts, attempts);
+  } finally { Date.now = clock; }
+});
