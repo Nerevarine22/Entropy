@@ -23,6 +23,7 @@
     </div>
   </header>
   <main id="main" class="main">
+    <p id="load-status" class="empty" role="status" hidden></p>
     <section class="page" id="page-leaderboard">
       <section class="map-section" aria-labelledby="map-heading">
         <div class="section-top">
@@ -45,14 +46,36 @@
       </section>
       <section class="leaderboard-section" aria-labelledby="board-heading">
         <div class="section-top board-heading">
-          <h2 id="board-heading">Leaderboard<span class="heading-dot">.</span></h2>
+          <h2 id="board-heading" tabindex="-1">Leaderboard<span class="heading-dot">.</span></h2>
           <label class="search"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Search by handle" autocomplete="off" aria-label="Search by handle"><span class="search-key" aria-hidden="true">/</span></label>
         </div>
-        <div class="table-shell"><div class="table-scroll"><table><thead><tr><th>RANK</th><th>CREATOR</th><th class="number">POSTS</th><th class="number">VIEWS</th><th class="number">LIKES</th><th class="number">ENGAGEMENT</th><th class="arrow-column"><span class="sr-only">Details</span></th></tr></thead><tbody id="leaderboard-body"></tbody></table></div><div id="empty" class="empty" hidden>No creators found. Try another handle.</div></div>
-        <p id="board-count" class="board-footer" role="status"></p>
+        <div class="table-shell">
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">RANK</th>
+                  <th scope="col">CREATOR</th>
+                  <th scope="col" class="number">POSTS</th>
+                  <th scope="col" class="number">VIEWS</th>
+                  <th scope="col" class="number">LIKES</th>
+                  <th scope="col" class="number">ENGAGEMENT</th>
+                  <th scope="col" class="number" title="Count provided by TwitterScore">SMART FOLLOWERS</th>
+                  <th scope="col" class="arrow-column"><span class="sr-only">Details</span></th>
+                </tr>
+              </thead>
+              <tbody id="leaderboard-body"></tbody>
+            </table>
+          </div>
+          <div id="empty" class="empty" hidden>No creators found. Try another handle.</div>
+        </div>
+        <div class="board-footer">
+          <p id="board-count" role="status"></p>
+          <nav id="board-pagination" aria-label="Leaderboard pagination" hidden></nav>
+        </div>
       </section>
     </section>
-    <section class="page info-page" id="page-methodology" hidden><div class="eyebrow"><span class="status-dot"></span> BEHIND THE NUMBERS</div><h1>How it <span>works.</span></h1><p class="info-lead">A clearer view of the creators contributing to the Entropy conversation.</p><div class="info-grid"><article class="info-card"><span>01 / DISCOVER</span><h2>Find the conversation.</h2><p>We index public X posts that mention @entropyIO. Replies and reposts are excluded.</p></article><article class="info-card"><span>02 / MEASURE</span><h2>Follow the impact.</h2><p>Views and engagement come from the latest available post metrics. Numbers may update at different times.</p></article><article class="info-card"><span>03 / RANK</span><h2>Make it visible.</h2><p>Creators are currently ranked by total views across indexed posts. A dedicated scoring formula is being developed.</p></article></div><p class="info-note">Coverage is partial. Views are cumulative and do not represent unique people or verified organic reach.</p></section>
+    <section class="page info-page" id="page-methodology" hidden><div class="eyebrow"><span class="status-dot"></span> BEHIND THE NUMBERS</div><h1>How it <span>works.</span></h1><p class="info-lead">A clearer view of the creators contributing to the Entropy conversation.</p><div class="info-grid"><article class="info-card"><span>01 / DISCOVER</span><h2>Find the conversation.</h2><p>We index public X posts that mention @entropyIO. Replies and reposts are excluded.</p></article><article class="info-card"><span>02 / MEASURE</span><h2>Follow the impact.</h2><p>Views and engagement come from the latest available post metrics. Numbers may update at different times. Smart Followers counts are provided by <a href="https://twitterscore.io/" target="_blank" rel="noopener noreferrer">TwitterScore (twitterscore.io)</a>.</p></article><article class="info-card"><span>03 / RANK</span><h2>Make it visible.</h2><p>Creators are currently ranked by total views across indexed posts. A dedicated scoring formula is being developed.</p></article></div><p class="info-note">Coverage is partial. Views are cumulative and do not represent unique people or verified organic reach.</p></section>
     <section class="page info-page" id="page-about" hidden><div class="eyebrow"><span class="status-dot"></span> ABOUT THIS PROJECT</div><h1>The community <span>behind Entropy.</span></h1><p class="info-lead">A home for the creators contributing to the Entropy conversation.</p><div class="about-card"><div class="about-pattern" aria-hidden="true"></div><div class="about-content"><span>ENTROPY / CREATORS</span><h2>Good ideas deserve<br>to be seen.</h2><p>Discover creators, explore their posts and see how the conversation is growing.</p><a class="outline-button" href="https://x.com/entropyIO" target="_blank" rel="noopener noreferrer">Follow Entropy on X <span>↗</span></a></div></div></section>
   </main>
   <footer class="footer"><div><span class="footer-brand">entropy<span>.</span></span><span>CREATORS</span></div><span>AN INDEPENDENT COMMUNITY VIEW</span><a href="https://x.com/entropyIO" target="_blank" rel="noopener noreferrer">X / @entropyIO ↗</a></footer>

@@ -30,6 +30,39 @@ export async function readLocalDataset() {
     return Model.validateDataset(data);
   } finally { db?.close(); }
 }
+
+export async function saveTwitterScore(authorId, smartFollowers, checkedAt) {
+  if (typeof authorId !== 'string' || !/^\d+$/.test(authorId)) throw new Error('Expected a numeric X user ID.');
+  if (smartFollowers !== null && (!Number.isSafeInteger(smartFollowers) || smartFollowers < 0)) throw new Error('Invalid Smart Followers count.');
+  if (!Number.isFinite(Date.parse(checkedAt))) throw new Error('Invalid Smart Followers observation time.');
+  const db = await openDb();
+  try {
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const control = db.prepare("SELECT generation,lease_token,lease_until FROM entropy_control WHERE id='main'").get();
+      if (!control || (control.lease_token && control.lease_until > Date.now())) throw new Error('The local database is unavailable or busy.');
+      const result = db.prepare(`
+        UPDATE entropy_records
+        SET payload = json_set(payload, '$.twitterScore', json(?))
+        WHERE generation = ? AND kind = 'author' AND record_id = ? AND chunk_index = 0
+          AND NOT EXISTS (
+            SELECT 1 FROM entropy_records AS chunk
+            WHERE chunk.generation = entropy_records.generation AND chunk.kind = 'author'
+              AND chunk.record_id = entropy_records.record_id AND chunk.chunk_index > 0
+          )
+      `).run(JSON.stringify({ smartFollowers, checkedAt }), control.generation, authorId);
+      if (result.changes !== 1) throw new Error('The creator record is unavailable for update.');
+      db.prepare("UPDATE entropy_control SET revision = revision + 1, updated_at = ? WHERE id = 'main'").run(checkedAt);
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  } finally {
+    db.close();
+  }
+}
+
 async function initialize(file) {
   const sample = JSON.parse(await readFile(path.join(root, 'seed.json'), 'utf8'));
   const incoming = Model.validateDataset(JSON.parse(await readFile(file, 'utf8')));
