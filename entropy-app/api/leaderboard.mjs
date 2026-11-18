@@ -14,17 +14,24 @@ export default {
           || url.username || url.password || url.pathname !== '/api/leaderboard' || url.search || url.hash) {
         return unavailable();
       }
+      const requested = new URL(request.url).searchParams;
+      for (const [key, maxLength] of [['view', 8], ['creator', 24], ['page', 6], ['q', 81]]) {
+        const value = requested.get(key);
+        if (value !== null) url.searchParams.set(key, value.slice(0, maxLength));
+      }
       const response = await fetch(url, {
-        headers: { Accept: 'application/json' },
+        headers: { Accept: 'application/json', 'User-Agent': 'Entropy-Creators/1.0' },
         redirect: 'error',
         signal: AbortSignal.timeout(8000),
       });
-      if (!response.ok || !response.headers.get('Content-Type')?.includes('application/json')) return unavailable();
+      if (!(response.ok || [400, 404].includes(response.status))
+          || !response.headers.get('Content-Type')?.includes('application/json')) return unavailable();
       return new Response(response.body, {
+        status: response.status,
         headers: {
           'Content-Type': 'application/json; charset=utf-8',
           'X-Content-Type-Options': 'nosniff',
-          'Cache-Control': 'public, max-age=30, s-maxage=60',
+          'Cache-Control': response.headers.get('Cache-Control') || 'no-store',
         },
       });
     } catch {

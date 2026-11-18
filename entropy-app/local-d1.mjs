@@ -14,6 +14,19 @@ async function openDb() {
   if (files.length !== 1) throw new Error('Expected exactly one local D1 database.');
   return new DatabaseSync(path.join(dbDir, files[0]));
 }
+export async function withLocalD1(use) {
+  const db = await openDb();
+  try {
+    const binding = { prepare(sql) {
+      return { bind(...values) {
+        return { all: () => ({ results: db.prepare(sql).all(...values) }) };
+      } };
+    } };
+    return await use(binding);
+  } finally {
+    db.close();
+  }
+}
 export async function readLocalDataset() {
   let db;
   try {
@@ -54,6 +67,65 @@ export async function saveTwitterScore(authorId, smartFollowers, checkedAt) {
       if (result.changes !== 1) throw new Error('The creator record is unavailable for update.');
       db.prepare("UPDATE entropy_control SET revision = revision + 1, updated_at = ? WHERE id = 'main'").run(checkedAt);
       db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  } finally {
+    db.close();
+  }
+}
+
+export async function importEarlyCreatorPosts(raw) {
+  const dataset = Model.validateDataset(raw);
+  if (dataset.posts.some(post => !Model.isEarlyCreatorPost(post))) throw new Error('The import contains a post outside the Early window.');
+  return insertCollectedPosts(dataset);
+}
+
+export async function importCollectedPosts(raw) {
+  const dataset = Model.validateDataset(raw);
+  if (dataset.posts.some(post => post.isReply !== false || !/^\d+$/.test(post.id) || !/^\d+$/.test(post.authorId))) {
+    throw new Error('The import requires X posts with numeric IDs and an explicit non-reply status.');
+  }
+  return insertCollectedPosts(dataset);
+}
+
+async function insertCollectedPosts(dataset) {
+  if (!dataset.posts.length) return { newAuthors: 0, newPosts: 0 };
+  const dates = dataset.posts.map(post => post.date).sort();
+  const earliest = dates[0];
+  const endExclusive = new Date(Date.parse(dates.at(-1) + 'T00:00:00Z') + 86400000).toISOString().slice(0, 10);
+  const observedAt = dataset.meta.asOf;
+  if (!Number.isFinite(Date.parse(observedAt))) throw new Error('Invalid observation timestamp.');
+
+  const db = await openDb();
+  try {
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const control = db.prepare("SELECT generation,lease_token,lease_until FROM entropy_control WHERE id='main'").get();
+      if (!control || (control.lease_token && control.lease_until > Date.now())) throw new Error('The local database is unavailable or busy.');
+
+      // Preserve existing authors, including their newer avatar and Smart Followers data.
+      const insert = db.prepare(`
+        INSERT INTO entropy_records (generation,kind,record_id,chunk_index,payload,created_at)
+        VALUES (?,?,?,0,?,?) ON CONFLICT(generation,kind,record_id,chunk_index) DO NOTHING
+      `);
+      const store = (kind, value) => insert.run(control.generation, kind, value.id, JSON.stringify(value), Date.now()).changes;
+      const newAuthors = dataset.authors.reduce((count, author) => count + store('author', author), 0);
+      const newPosts = dataset.posts.reduce((count, post) => count + store('post', post), 0);
+      if (newPosts > 0) {
+        const meta = db.prepare(`
+          UPDATE entropy_records SET payload=json_set(payload,
+            '$.periodStart', min(coalesce(json_extract(payload,'$.periodStart'),?),?),
+            '$.periodEndExclusive', max(coalesce(json_extract(payload,'$.periodEndExclusive'),?),?),
+            '$.asOf', max(coalesce(json_extract(payload,'$.asOf'),?),?))
+          WHERE generation=? AND kind='dataset-meta' AND record_id='main' AND chunk_index=0
+        `).run(earliest, earliest, endExclusive, endExclusive, observedAt, observedAt, control.generation);
+        if (meta.changes !== 1) throw new Error('Missing local dataset metadata.');
+        db.prepare("UPDATE entropy_control SET revision=revision+1,updated_at=? WHERE id='main'").run(new Date().toISOString());
+      }
+      db.exec('COMMIT');
+      return { newAuthors, newPosts };
     } catch (error) {
       db.exec('ROLLBACK');
       throw error;

@@ -5,6 +5,11 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function (Scoring) {
   'use strict';
   const METRICS = ['impressions', 'likes', 'reposts', 'uiReposts', 'quotes', 'replies', 'bookmarks'];
+  const EARLY_CREATOR_PERIOD = Object.freeze({ start: '2026-08-24', endExclusive: '2026-09-24' });
+  function isEarlyCreatorPost(post) {
+    return post.isReply === false && typeof post.date === 'string'
+      && post.date >= EARLY_CREATOR_PERIOD.start && post.date < EARLY_CREATOR_PERIOD.endExclusive;
+  }
   const isNumber = v => typeof v === 'number' && Number.isFinite(v) && v >= 0;
   const safeId = v => typeof v === 'string' && v.trim() === v && v.length > 0 && !['__proto__', 'prototype', 'constructor'].includes(v);
   const plain = v => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -254,5 +259,6 @@
       ...(event.accountId ? { accountId: remap(event.accountId) } : {}) }));
     return validateState(migrated);
   }
-  return { validateDataset, validateState, reconcileImport, periodFor, sumKnown, reviewAccounts, aggregateAuthor, decision, creatorView, initialState, safeId };
+  return { validateDataset, validateState, reconcileImport, periodFor, sumKnown, reviewAccounts, aggregateAuthor, decision, creatorView, initialState, safeId,
+    EARLY_CREATOR_PERIOD, isEarlyCreatorPost };
 });

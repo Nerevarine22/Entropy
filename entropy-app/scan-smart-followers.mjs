@@ -9,7 +9,7 @@ const ERROR_CODES = new Set([
   'invalid_params', 'rate_limited', 'quota_exceeded', 'server_error',
 ]);
 
-function topCreators(dataset) {
+function topCreators(dataset, limit) {
   const views = new Map();
   for (const post of dataset.posts) {
     if (post.isReply === true) continue;
@@ -19,7 +19,7 @@ function topCreators(dataset) {
   }
   return dataset.authors.filter(author => views.has(author.id) && /^[1-9]\d*$/.test(author.id))
     .sort((a, b) => (views.get(b.id) ?? -1) - (views.get(a.id) ?? -1) || a.handle.localeCompare(b.handle))
-    .slice(0, TOP_COUNT);
+    .slice(0, limit);
 }
 
 async function fetchCount(authorId, key) {
@@ -55,7 +55,10 @@ async function main() {
   const dataset = await readLocalDataset();
   if (!dataset) throw new Error('The local D1 database has no dataset.');
 
-  const creators = topCreators(dataset);
+  const topOption = process.argv.indexOf('--top');
+  const limit = topOption < 0 ? TOP_COUNT : Number(process.argv[topOption + 1]);
+  if (!Number.isSafeInteger(limit) || limit < 1) throw new Error('--top requires a positive integer.');
+  const creators = topCreators(dataset, limit);
   const now = Date.now();
   const pending = creators.filter(author => {
     const age = now - Date.parse(author.twitterScore?.checkedAt);
