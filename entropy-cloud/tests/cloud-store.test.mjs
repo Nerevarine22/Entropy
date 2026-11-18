@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { readFile } from 'node:fs/promises';
 import { build } from 'esbuild';
+import { fileURLToPath } from 'node:url';
 
 const scope = { DB: null };
 globalThis.__entropyCloudTestEnv = scope;
@@ -29,7 +30,7 @@ const database = {
 };
 const migration = await readFile(new URL('../drizzle/0000_aberrant_gamora.sql', import.meta.url), 'utf8');
 async function moduleFor(path) {
-  const result = await build({ entryPoints: [new URL(path, import.meta.url).pathname], bundle: true, format: 'esm', platform: 'node', target: 'node22', write: false,
+  const result = await build({ entryPoints: [fileURLToPath(new URL(path, import.meta.url))], bundle: true, format: 'esm', platform: 'node', target: 'node22', write: false,
     plugins: [{ name: 'test-env', setup(builder) {
       builder.onResolve({ filter: /^cloudflare:workers$/ }, () => ({ path: 'env', namespace: 'cloud-test' }));
       builder.onLoad({ filter: /.*/, namespace: 'cloud-test' }, () => ({ contents: 'export const env = globalThis.__entropyCloudTestEnv;', loader: 'js' }));
@@ -416,7 +417,7 @@ test('accelerated steps preserve their own progress while hourly discovery keeps
       if (calls === 1) {
         assert.equal(new URL(url).pathname, '/twitter/tweet/advanced_search');
         assert.ok(new URL(url).searchParams.get('query').startsWith('@entropyIO since_time:'));
-      } else assert.equal(new URL(url).pathname, '/twitter/user/mentions');
+      } else { assert.equal(new URL(url).pathname, '/twitter/tweet/advanced_search'); assert.match(new URL(url).searchParams.get('query'), /-filter:replies/); }
       return emptySearchPage();
     };
     const early = await store.runBackfill(); assert.equal(early.revision, value.revision); assert.ok(Date.parse(early.sync.backfill.nextStepAt) > now);
@@ -550,7 +551,7 @@ test('method changes require cancellation and retain only five safe job summarie
 
 const hourlyClockStart = () => Math.floor(Date.now() / 3600000) * 3600000 + 20 * 60000;
 function discoveryTweet(now, id = '1900000000000000001', age = 60000) {
-  return { id, text: 'A useful @entropyIO post.', createdAt: new Date(now - age).toISOString(),
+  return { id, isReply: false, text: 'A useful @entropyIO post.', createdAt: new Date(now - age).toISOString(),
     author: { id: '1000000000000000001', userName: 'newcreator', name: 'New Creator', followers: 10 },
     viewCount: 100, likeCount: 2, retweetCount: 0, quoteCount: 0, replyCount: 1, bookmarkCount: 0 };
 }
@@ -573,9 +574,8 @@ test('hourly discovery checks new mentions even with a metrics backlog and prese
     patchSyncFixture({ phase: 'refresh', refresh: { pendingIds, cycleStartedAt: new Date(now).toISOString() } });
     let calls = 0;
     globalThis.fetch = async url => {
-      calls++; const target = new URL(url); assert.equal(target.pathname, '/twitter/user/mentions');
-      assert.equal(target.searchParams.get('userName'), 'entropyIO');
-      assert.ok(Number(target.searchParams.get('untilTime')) * 1000 <= now);
+      calls++; const target = new URL(url); assert.equal(target.pathname, '/twitter/tweet/advanced_search');
+      assert.match(target.searchParams.get('query'), /^@entropyIO since_time:\d+ until_time:\d+ -filter:replies$/);
       return discoveryResponse([discoveryTweet(now)]);
     };
     const result = await store.runSync(undefined, true);
@@ -648,7 +648,7 @@ test('metrics maintenance adapts failed batches and keeps every queued ID withou
     fakeKey(); let value = await store.getWorkbench(); value = await store.setCollector(true, value.revision);
     const ids = new Set(value.dataset.posts.map(post => post.id)), requestedSizes = [];
     for (let attempt = 0; attempt < 2; attempt++) {
-      globalThis.fetch = async url => { assert.equal(new URL(url).pathname, '/twitter/user/mentions'); return discoveryResponse([]); };
+      globalThis.fetch = async url => { assert.equal(new URL(url).pathname, '/twitter/tweet/advanced_search'); return discoveryResponse([]); };
       value = await store.runSync(undefined, true);
       const latest = structuredClone(value.sync.hourly), nextRun = value.sync.nextRunAt; now += 6000;
       globalThis.fetch = async url => {

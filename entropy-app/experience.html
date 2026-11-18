@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="description" content="Explore the creators contributing to the Entropy conversation.">
+  <title>Entropy Creators</title>
+  <link rel="icon" type="image/png" href="/entropy-logo.png">
+  <link rel="stylesheet" href="experience.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="header">
+    <div class="header-inner">
+      <a href="#leaderboard" class="brand" aria-label="Entropy Creators home"><img class="brand-mark" src="/entropy-logo.png" alt="" width="36" height="36"><span class="brand-divider"></span><span class="brand-name">CREATORS</span></a>
+      <nav class="navigation" aria-label="Main navigation">
+        <a href="#leaderboard" data-page="leaderboard">Leaderboard</a>
+        <a href="#methodology" data-page="methodology">Methodology</a>
+        <a href="#about" data-page="about">About</a>
+      </nav>
+      <a class="header-link" href="https://pro.entropy.io/" target="_blank" rel="noopener noreferrer">Explore Entropy <span aria-hidden="true">↗</span></a>
+    </div>
+  </header>
+  <main id="main" class="main">
+    <section class="page" id="page-leaderboard">
+      <section class="map-section" aria-labelledby="map-heading">
+        <div class="section-top">
+          <div>
+            <h1 id="map-heading">Influence map<span class="heading-dot">.</span></h1>
+            <p>Tile size reflects total post views.</p>
+          </div>
+          <span id="map-count" class="section-meta"></span>
+        </div>
+        <div id="influence-map" class="influence-map" aria-label="Top creators by post views"></div>
+      </section>
+      <section class="overview-section" aria-labelledby="overview-heading">
+        <h2 id="overview-heading">Overview</h2>
+        <div class="overview-bar">
+          <div><span class="overview-label">CREATORS TRACKED</span><strong id="creator-total">—</strong></div>
+          <div><span class="overview-label">POSTS INDEXED</span><strong id="post-total">—</strong></div>
+          <div><span class="overview-label">TOTAL VIEWS</span><strong id="view-total">—</strong></div>
+          <div class="overview-update"><span class="status-dot"></span><span id="updated">LOCAL SNAPSHOT</span></div>
+        </div>
+      </section>
+      <section class="leaderboard-section" aria-labelledby="board-heading">
+        <div class="section-top board-heading">
+          <h2 id="board-heading">Leaderboard<span class="heading-dot">.</span></h2>
+          <label class="search"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Search by handle" autocomplete="off" aria-label="Search by handle"><span class="search-key" aria-hidden="true">/</span></label>
+        </div>
+        <div class="table-shell"><div class="table-scroll"><table><thead><tr><th>RANK</th><th>CREATOR</th><th class="number">POSTS</th><th class="number">VIEWS</th><th class="number">LIKES</th><th class="number">ENGAGEMENT</th><th class="arrow-column"><span class="sr-only">Details</span></th></tr></thead><tbody id="leaderboard-body"></tbody></table></div><div id="empty" class="empty" hidden>No creators found. Try another handle.</div></div>
+        <p id="board-count" class="board-footer" role="status"></p>
+      </section>
+    </section>
+    <section class="page info-page" id="page-methodology" hidden><div class="eyebrow"><span class="status-dot"></span> BEHIND THE NUMBERS</div><h1>How it <span>works.</span></h1><p class="info-lead">A clearer view of the creators contributing to the Entropy conversation.</p><div class="info-grid"><article class="info-card"><span>01 / DISCOVER</span><h2>Find the conversation.</h2><p>We index public X posts that mention @entropyIO. Replies and reposts are excluded.</p></article><article class="info-card"><span>02 / MEASURE</span><h2>Follow the impact.</h2><p>Views and engagement come from the latest available post metrics. Numbers may update at different times.</p></article><article class="info-card"><span>03 / RANK</span><h2>Make it visible.</h2><p>Creators are currently ranked by total views across indexed posts. A dedicated scoring formula is being developed.</p></article></div><p class="info-note">Coverage is partial. Views are cumulative and do not represent unique people or verified organic reach.</p></section>
+    <section class="page info-page" id="page-about" hidden><div class="eyebrow"><span class="status-dot"></span> ABOUT THIS PROJECT</div><h1>The community <span>behind Entropy.</span></h1><p class="info-lead">A home for the creators contributing to the Entropy conversation.</p><div class="about-card"><div class="about-pattern" aria-hidden="true"></div><div class="about-content"><span>ENTROPY / CREATORS</span><h2>Good ideas deserve<br>to be seen.</h2><p>Discover creators, explore their posts and see how the conversation is growing.</p><a class="outline-button" href="https://x.com/entropyIO" target="_blank" rel="noopener noreferrer">Follow Entropy on X <span>↗</span></a></div></div></section>
+  </main>
+  <footer class="footer"><div><span class="footer-brand">entropy<span>.</span></span><span>CREATORS</span></div><span>AN INDEPENDENT COMMUNITY VIEW</span><a href="https://x.com/entropyIO" target="_blank" rel="noopener noreferrer">X / @entropyIO ↗</a></footer>
+  <dialog id="creator-dialog" aria-labelledby="dialog-name"><div class="dialog-head"><span>CREATOR PROFILE <span class="small-sep">/</span> ENTROPY</span><button id="close-dialog" aria-label="Close profile">✕</button></div><div id="dialog-content"></div></dialog>
+  <script src="scoring.js"></script><script src="model.js"></script><script src="seed.js"></script><script src="experience.js"></script>
+</body>
+</html>

@@ -812,10 +812,17 @@ function normalizeTweets(tweets, { observedAt, query = "", periodStart, periodEn
     const previousAuthor = authors.get(author.id);
     if (previousAuthor && previousAuthor.handle.toLowerCase() !== author.userName.toLowerCase()) invalid("\u0421\u0443\u043F\u0435\u0440\u0435\u0447\u043B\u0438\u0432\u0456 \u0456\u043C\u0435\u043D\u0430 \u043E\u0434\u043D\u043E\u0433\u043E \u0430\u0432\u0442\u043E\u0440\u0430 \u0443 \u0437\u043D\u0456\u043C\u043A\u0443.");
     const followers = count(author.followers, "followers");
+    let avatarUrl = previousAuthor?.avatarUrl ?? null;
+    try {
+      const image = new URL(author.profilePicture);
+      if (image.protocol === "https:" && image.hostname === "pbs.twimg.com" && !image.username && !image.password && !image.port) avatarUrl = image.href;
+    } catch (_) {
+    }
     authors.set(author.id, {
       id: author.id,
       handle: author.userName,
       displayName: typeof author.name === "string" ? author.name : author.userName,
+      avatarUrl,
       followers: followers ?? previousAuthor?.followers ?? null,
       smartFollowersComplete: false,
       smartEngagementComplete: false
@@ -826,6 +833,7 @@ function normalizeTweets(tweets, { observedAt, query = "", periodStart, periodEn
       authorHandle: author.userName,
       date,
       publishedAt,
+      isReply: tweet.isReply === true || numericId(tweet.inReplyToId) ? true : tweet.isReply === false ? false : null,
       url: "https://x.com/" + author.userName + "/status/" + tweet.id,
       summary: "",
       body: typeof tweet.text === "string" ? tweet.text : null,
@@ -844,7 +852,6 @@ function normalizeTweets(tweets, { observedAt, query = "", periodStart, periodEn
       // conversationId is retained as evidence, never used to group other authors' work.
       conversationId: numericId(tweet.conversationId) ? tweet.conversationId : null,
       inReplyToId: numericId(tweet.inReplyToId) ? tweet.inReplyToId : null,
-      isReply: tweet.isReply === true,
       isQuote: !!tweet.quoted_tweet
     });
   }
@@ -1081,7 +1088,7 @@ function normalizedPage(tweets, nowIso, window2 = null) {
   if (window2) {
     const mentionIds = new Set(tweets.filter(directlyMentioned).map((t) => t.id));
     const from = Date.parse(window2.start), until = Date.parse(window2.endExclusive);
-    data.posts = data.posts.filter((p) => mentionIds.has(p.id) && p.authorHandle.toLowerCase() !== TARGET.toLowerCase() && Date.parse(p.publishedAt) >= from && Date.parse(p.publishedAt) < until);
+    data.posts = data.posts.filter((p) => p.isReply === false && mentionIds.has(p.id) && p.authorHandle.toLowerCase() !== TARGET.toLowerCase() && Date.parse(p.publishedAt) >= from && Date.parse(p.publishedAt) < until);
     const authors = new Set(data.posts.map((p) => p.authorId));
     data.authors = data.authors.filter((a) => authors.has(a.id));
     data.meta.periodStart = window2.start.slice(0, 10);
@@ -1180,7 +1187,14 @@ async function advanceSync(workbench, { client, now, maxRequests = 1 } = {}) {
         else sync.discovery.pendingWindows[0] = value;
       };
       if (!timestamp(window2.start) || !timestamp(window2.endExclusive) || Date.parse(window2.start) >= Date.parse(window2.endExclusive) || typeof window2.cursor !== "string") throw new Error("Invalid checkpoint.");
-      const query = "@" + TARGET + " since_time:" + Math.floor(Date.parse(window2.start) / 1e3) + " until_time:" + Math.floor(Date.parse(window2.endExclusive) / 1e3);
+      if (window2.queryVersion !== "posts-v1") {
+        window2.cursor = "";
+        window2.previousOldest = null;
+        window2.seenCursors = [];
+        window2.queryVersion = "posts-v1";
+        saveWindow(window2);
+      }
+      const query = "@" + TARGET + " since_time:" + Math.floor(Date.parse(window2.start) / 1e3) + " until_time:" + Math.floor(Date.parse(window2.endExclusive) / 1e3) + " -filter:replies";
       const page = await client.searchPage({ query, cursor: window2.cursor });
       if (!page || !Array.isArray(page.tweets) || typeof page.hasNextPage !== "boolean") throw new Error("Invalid discovery response.");
       const incoming = normalizedPage(page.tweets, nowIso, window2);
@@ -1254,7 +1268,7 @@ async function advanceSync(workbench, { client, now, maxRequests = 1 } = {}) {
 var HOUR = 36e5;
 var CATCHUP_SPACING = 5100;
 var HOURLY_MIN_WINDOW = 3e5;
-function hourlyWindow(start, endExclusive, kind = "latest", method = "mentions") {
+function hourlyWindow(start, endExclusive, kind = "latest", method = "search-posts-v1") {
   return {
     id: "hourly:" + method + ":" + new Date(start).toISOString() + ":" + new Date(endExclusive).toISOString(),
     method,
@@ -1271,8 +1285,9 @@ function hourlyCheckpoint(sync) {
   const hourly = copy(sync.hourly || {});
   hourly.version = 1;
   hourly.target = TARGET;
-  hourly.method = "mentions";
+  hourly.method = "search-posts-v1";
   hourly.pendingWindows = Array.isArray(hourly.pendingWindows) ? hourly.pendingWindows : [];
+  hourly.pendingWindows = hourly.pendingWindows.map((window2) => window2.method === "search-posts-v1" ? window2 : { ...window2, method: "search-posts-v1", cursor: "", previousOldest: null, seenCursors: [], observedPostIds: [] });
   hourly.completedRanges = Array.isArray(hourly.completedRanges) ? hourly.completedRanges : [];
   hourly.gaps = Array.isArray(hourly.gaps) ? hourly.gaps : [];
   for (const key of ["requestCount", "searchPages", "latestPages", "catchupPages", "addedPosts", "splitWindows"]) hourly[key] = Number.isInteger(hourly[key]) && hourly[key] >= 0 ? hourly[key] : 0;
@@ -1292,7 +1307,7 @@ function migrateHourlyRecent(sync, hourly) {
   if (hourly.migratedLegacyRecent) return;
   const old = sync.discovery.recentWindow;
   if (old && timestamp(old.start) && timestamp(old.endExclusive) && Date.parse(old.start) < Date.parse(old.endExclusive)) {
-    const value = { ...copy(old), ...hourlyWindow(Date.parse(old.start), Date.parse(old.endExclusive), "legacy-recent", "search"), cursor: old.cursor || "", previousOldest: old.previousOldest ?? null, seenCursors: copy(old.seenCursors || []), observedPostIds: copy(old.observedPostIds || []) };
+    const value = { ...copy(old), ...hourlyWindow(Date.parse(old.start), Date.parse(old.endExclusive), "legacy-recent") };
     value.kind = "legacy-recent";
     value.observedPostIds ||= [];
     appendHourlyWindow(hourly, value);
@@ -1322,7 +1337,7 @@ function chooseHourlyCatchup(hourly) {
   const latest = hourly.latestWindow;
   if (!latest || !timestamp(latest.start) || !timestamp(latest.endExclusive)) return oldest;
   const from = Date.parse(latest.start), until = Date.parse(latest.endExclusive);
-  return [...hourly.pendingWindows].filter((window2) => (window2.method || "mentions") === "mentions" && Date.parse(window2.start) < until && Date.parse(window2.endExclusive) > from).sort((a, b) => Date.parse(b.start) - Date.parse(a.start) || Date.parse(b.endExclusive) - Date.parse(a.endExclusive))[0] || oldest;
+  return [...hourly.pendingWindows].filter((window2) => window2.method === "search-posts-v1" && Date.parse(window2.start) < until && Date.parse(window2.endExclusive) > from).sort((a, b) => Date.parse(b.start) - Date.parse(a.start) || Date.parse(b.endExclusive) - Date.parse(a.endExclusive))[0] || oldest;
 }
 function hourlyGap(sync, hourly, value) {
   hourly.gaps.push(value);
@@ -1332,7 +1347,7 @@ function replaceHourlyWithSplit(sync, hourly, index, window2, code, at, details 
   const from = Date.parse(window2.start), until = Date.parse(window2.endExclusive);
   if (until - from >= 2 * HOURLY_MIN_WINDOW) {
     const middle = Math.floor((from + until) / 2e3) * 1e3;
-    hourly.pendingWindows.splice(index, 1, hourlyWindow(from, middle, "recovery", window2.method || "mentions"), hourlyWindow(middle, until, "recovery", window2.method || "mentions"));
+    hourly.pendingWindows.splice(index, 1, hourlyWindow(from, middle, "recovery"), hourlyWindow(middle, until, "recovery"));
     hourly.splitWindows++;
     return "split";
   }
@@ -1342,7 +1357,7 @@ function replaceHourlyWithSplit(sync, hourly, index, window2, code, at, details 
 }
 function hourlyKnownMissing(dataset, window2) {
   const seen = new Set(window2.observedPostIds || []), from = Date.parse(window2.start), until = Date.parse(window2.endExclusive);
-  return dataset.posts.filter((post) => !seen.has(post.id) && Date.parse(post.publishedAt) >= from && Date.parse(post.publishedAt) < until && typeof post.authorHandle === "string" && post.authorHandle.toLowerCase() !== TARGET.toLowerCase() && directlyMentioned({ text: post.body })).length;
+  return dataset.posts.filter((post) => post.isReply !== true && !seen.has(post.id) && Date.parse(post.publishedAt) >= from && Date.parse(post.publishedAt) < until && typeof post.authorHandle === "string" && post.authorHandle.toLowerCase() !== TARGET.toLowerCase() && directlyMentioned({ text: post.body })).length;
 }
 function promoteHourlyCoverage(hourly) {
   let point = Date.parse(hourly.completedThrough || hourly.coverageFrom);
@@ -1374,8 +1389,8 @@ async function advanceHourlyDiscovery(workbench, { client, now, maxRequests = 1,
   if (!chosen) return result();
   const index = hourly.pendingWindows.indexOf(chosen), window2 = copy(chosen);
   if (index < 0 || !timestamp(window2.start) || !timestamp(window2.endExclusive) || Date.parse(window2.start) >= Date.parse(window2.endExclusive) || typeof window2.cursor !== "string" || !Array.isArray(window2.seenCursors)) throw new Error("Invalid checkpoint.");
-  const method = window2.method || "mentions";
-  if (!["search", "mentions"].includes(method) || !client || typeof client[method === "mentions" ? "mentionsPage" : "searchPage"] !== "function") throw new Error("A read-only collection client is required.");
+  const method = window2.method;
+  if (method !== "search-posts-v1" || !client || typeof client.searchPage !== "function") throw new Error("A read-only collection client is required.");
   const latestDueBefore = hourly.nextRunAt || sync.nextRunAt;
   sync.phase = "discovery";
   sync.activeLane = lane === "latest" ? "hourly-latest" : "hourly-catchup";
@@ -1391,8 +1406,8 @@ async function advanceHourlyDiscovery(workbench, { client, now, maxRequests = 1,
   hourly.lastWindow = snapshot;
   if (lane === "latest") hourly.latestWindow = { ...snapshot };
   try {
-    const query = "@" + TARGET + " since_time:" + Math.floor(Date.parse(window2.start) / 1e3) + " until_time:" + Math.floor(Date.parse(window2.endExclusive) / 1e3);
-    const page = method === "mentions" ? await client.mentionsPage({ userName: TARGET, sinceTime: Math.floor(Date.parse(window2.start) / 1e3), untilTime: Math.floor(Date.parse(window2.endExclusive) / 1e3), cursor: window2.cursor }) : await client.searchPage({ query, cursor: window2.cursor });
+    const query = "@" + TARGET + " since_time:" + Math.floor(Date.parse(window2.start) / 1e3) + " until_time:" + Math.floor(Date.parse(window2.endExclusive) / 1e3) + " -filter:replies";
+    const page = await client.searchPage({ query, cursor: window2.cursor });
     if (!page || !Array.isArray(page.tweets) || typeof page.hasNextPage !== "boolean") throw new Error("Invalid discovery response.");
     const incoming = normalizedPage(page.tweets, at, window2);
     const oldIds = new Set(dataset.posts.map((post) => post.id));
@@ -1614,7 +1629,7 @@ function normalizePage(tweets, observedAt, current) {
   const normalizedNonReposts = data.posts.length;
   const mentionIds = new Set(tweets.filter(directlyMentioned2).map((t) => t.id));
   const from = Date.parse(current.start), until = Date.parse(current.endExclusive);
-  data.posts = data.posts.filter((post) => mentionIds.has(post.id) && post.authorHandle.toLowerCase() !== TARGET2.toLowerCase() && Date.parse(post.publishedAt) >= from && Date.parse(post.publishedAt) < until);
+  data.posts = data.posts.filter((post) => post.isReply === false && mentionIds.has(post.id) && post.authorHandle.toLowerCase() !== TARGET2.toLowerCase() && Date.parse(post.publishedAt) >= from && Date.parse(post.publishedAt) < until);
   const authorIds = new Set(data.posts.map((post) => post.authorId));
   data.authors = data.authors.filter((author) => authorIds.has(author.id));
   data.meta.periodStart = current.start.slice(0, 10);
@@ -1630,7 +1645,7 @@ function missingKnownPosts(result, range, legacyOnly = false) {
   const from = Date.parse(range.start), until = Date.parse(range.endExclusive), startedAt = Date.parse(job.startedAt);
   return result.dataset.posts.filter((post) => {
     const published = Date.parse(post.publishedAt), measured = Date.parse(post.metricsAsOf);
-    return published >= from && published < until && !observed.has(post.id) && typeof post.authorHandle === "string" && post.authorHandle.toLowerCase() !== TARGET2.toLowerCase() && directlyMentioned2({ text: post.body }) && (!legacyOnly || !Number.isFinite(measured) || measured < startedAt);
+    return post.isReply !== true && published >= from && published < until && !observed.has(post.id) && typeof post.authorHandle === "string" && post.authorHandle.toLowerCase() !== TARGET2.toLowerCase() && directlyMentioned2({ text: post.body }) && (!legacyOnly || !Number.isFinite(measured) || measured < startedAt);
   }).length;
 }
 function recordKnownGap(result, range, at, legacyOnly = false) {
@@ -1762,9 +1777,16 @@ async function advanceBackfill(workbench, { client, now } = {}) {
   const current = copy2(job.pendingWindows[0]);
   const method = job.method || "search";
   if (!collectionMethods.has(method)) throw new Error("Invalid backfill method checkpoint.");
-  if (!client || typeof client[method === "mentions" ? "mentionsPage" : "searchPage"] !== "function") throw new Error("A read-only collection client is required.");
+  if (!client || typeof client.searchPage !== "function") throw new Error("A read-only collection client is required.");
   const from = time(current.start, "checkpoint start"), until = time(current.endExclusive, "checkpoint end");
   if (until <= from || typeof current.cursor !== "string" || !Array.isArray(current.seenCursors)) throw new Error("Invalid backfill checkpoint.");
+  if (current.queryVersion !== "posts-v1") {
+    current.cursor = "";
+    current.previousOldest = null;
+    current.seenCursors = [];
+    current.queryVersion = "posts-v1";
+    job.pendingWindows[0] = current;
+  }
   if (method === "id-search") {
     idBound(from);
     idBound(until);
@@ -1775,7 +1797,7 @@ async function advanceBackfill(workbench, { client, now } = {}) {
   sync.requestCount = (Number.isInteger(sync.requestCount) ? sync.requestCount : 0) + 1;
   try {
     const query = method === "id-search" ? "@" + TARGET2 + " since_id:" + idBound(from) + " max_id:" + idBound(until) : "@" + TARGET2 + " since_time:" + Math.floor(from / 1e3) + " until_time:" + Math.floor(until / 1e3);
-    const page = method === "mentions" ? await client.mentionsPage({ userName: TARGET2, sinceTime: Math.floor(from / 1e3), untilTime: Math.floor(until / 1e3), cursor: current.cursor }) : await client.searchPage({ query, cursor: current.cursor });
+    const page = await client.searchPage({ query: query + " -filter:replies", cursor: current.cursor });
     if (!page || !Array.isArray(page.tweets) || typeof page.hasNextPage !== "boolean") throw new Error("Invalid discovery response.");
     const times = page.tweets.map((tweet) => Date.parse(tweet?.createdAt)).filter(Number.isFinite);
     job.lastPageStats = {

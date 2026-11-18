@@ -6,7 +6,7 @@ import { mergeDataset, advanceSync, advanceHourlyDiscovery, classifySyncError } 
 const START = '2026-11-17T12:00:00.000Z';
 const LATER = '2026-11-17T12:05:00.000Z';
 const author = { id: '200', handle: 'creator', followers: 12, smartFollowersComplete: false, smartEngagementComplete: false };
-const rawTweet = (id = '111', more = {}) => ({ id, text: 'Useful explanation of @entropyIO', createdAt: '2026-11-01T12:00:00Z',
+const rawTweet = (id = '111', more = {}) => ({ id, isReply: false, text: 'Useful explanation of @entropyIO', createdAt: '2026-11-01T12:00:00Z',
   author: { id: '200', userName: 'creator', name: 'Creator', followers: 12 },
   viewCount: 100, likeCount: 3, retweetCount: 0, quoteCount: 1, replyCount: 1, ...more });
 const post = (id = '111', more = {}) => ({ id, authorId: '200', authorHandle: 'creator', date: '2026-11-01', publishedAt: '2026-11-01T12:00:00.000Z',
@@ -81,7 +81,7 @@ test('first discovery finds fresh mentions while retaining the entire UTC month 
   const result = await advanceSync(wb(data([], [])), { now: START, maxRequests: 99, client: client(async args => {
     calls.push(args); return { tweets: [rawTweet('111', { createdAt: '2026-11-17T11:45:00Z' })], hasNextPage: true, nextCursor: 'opaque-1' };
   }) });
-  assert.equal(calls.length, 1); assert.equal(calls[0].query, '@entropyIO since_time:' + Date.parse('2026-11-17T11:30:00Z') / 1000 + ' until_time:' + Date.parse(START) / 1000);
+  assert.equal(calls.length, 1); assert.equal(calls[0].query, '@entropyIO since_time:' + Date.parse('2026-11-17T11:30:00Z') / 1000 + ' until_time:' + Date.parse(START) / 1000 + ' -filter:replies');
   assert.equal(result.sync.discovery.recentWindow.cursor, 'opaque-1');
   assert.equal(result.sync.discovery.pendingWindows[0].start, '2026-11-01T00:00:00.000Z');
   assert.equal(result.sync.discovery.pendingWindows.length, 17);
@@ -208,7 +208,7 @@ test('first tick resolves temporary sample identities through immutable posts an
   assert.equal(publicView.status, 'banned'); assert.ok(!JSON.stringify(publicView).includes('PRIVATE_NOTE'));
 });
 test('provider errors preserve data and checkpoint, count the attempt, and redact secrets', async () => {
-  const before = wb(data(), { discovery: { pendingWindows: [{ start: '2026-11-01T00:00:00Z', endExclusive: '2026-11-02T00:00:00Z', cursor: 'saved', previousOldest: null, seenCursors: [] }], coveredThrough: null } });
+  const before = wb(data(), { discovery: { pendingWindows: [{ start: '2026-11-01T00:00:00Z', endExclusive: '2026-11-02T00:00:00Z', cursor: 'saved', queryVersion: 'posts-v1', previousOldest: null, seenCursors: [] }], coveredThrough: null } });
   const untouched = structuredClone(before);
   const result = await advanceSync(before, { now: START, client: client(async () => { const error = new Error('SECRET_PROVIDER_KEY'); error.status = 429; throw error; }) });
   assert.deepEqual(result.dataset, untouched.dataset); assert.deepEqual(result.state, untouched.state); assert.deepEqual(before, untouched);
@@ -322,9 +322,28 @@ test('known merge and identity errors map to static diagnostics', () => {
   }
 });
 
-const hourlyClient = mentionsPage => ({ mentionsPage, tweetsByIds: async () => { throw new Error('Hourly discovery must not refresh metrics.'); }, searchPage: async () => { throw new Error('Unexpected historical search.'); } });
+const legacyArgs = args => ({ userName: 'entropyIO', sinceTime: Number(/since_time:(\d+)/.exec(args.query)[1]), untilTime: Number(/until_time:(\d+)/.exec(args.query)[1]), cursor: args.cursor });
+const hourlyClient = handler => ({ searchPage: args => handler(legacyArgs(args)), tweetsByIds: async () => { throw new Error('Hourly discovery must not refresh metrics.'); } });
 const emptyPage = () => ({ tweets: [], hasNextPage: false, nextCursor: null });
 const hourTweet = (id, createdAt = '2026-11-17T11:45:00Z') => rawTweet(id, { createdAt });
+
+test('hourly search excludes replies and unknown types even if the provider returns them', async () => {
+  let request;
+  const unknown = hourTweet('5012'); delete unknown.isReply;
+  const result = await advanceHourlyDiscovery(wb(data([], [])), { now: START, client: { searchPage: async args => {
+    request = args; return { tweets: [hourTweet('5010'), { ...hourTweet('5011'), isReply: true }, unknown], hasNextPage: false };
+  } } });
+  assert.match(request.query, /-filter:replies/);
+  assert.deepEqual(result.dataset.posts.map(post => post.id), ['5010']);
+});
+
+test('legacy mention checkpoints restart their time window under the new search filter', async () => {
+  const window = { id: 'old', method: 'mentions', start: '2026-11-17T11:00:00Z', endExclusive: START, cursor: 'old-cursor', previousOldest: START, seenCursors: ['old-cursor'], observedPostIds: ['123'] };
+  let request;
+  const result = await advanceHourlyDiscovery(wb(data([], []), { hourly: { pendingWindows: [window], migratedLegacyRecent: true } }), { now: START, lane: 'catchup', client: { searchPage: async args => { request = args; return emptyPage(); } } });
+  assert.equal(request.cursor, ''); assert.match(request.query, /-filter:replies/);
+  assert.equal(result.sync.hourly.method, 'search-posts-v1');
+});
 
 test('hourly latest always searches current mentions before metrics, history or a legacy recent cursor', async () => {
   const legacy = { start: '2026-11-16T22:00:00.000Z', endExclusive: '2026-11-16T23:00:00.000Z', cursor: 'legacy-search-cursor', seenCursors: ['legacy-search-cursor'], previousOldest: null };
@@ -335,16 +354,16 @@ test('hourly latest always searches current mentions before metrics, history or 
   assert.deepEqual(calls, [{ userName: 'entropyIO', sinceTime: Date.parse('2026-11-17T10:55:00Z') / 1000, untilTime: Date.parse(START) / 1000, cursor: '' }]);
   assert.equal(result.dataset.posts.length, 1); assert.deepEqual(result.sync.refresh.pendingIds, ['999']);
   assert.equal(result.sync.discovery.recentWindow.cursor, 'legacy-search-cursor'); assert.equal(result.sync.discovery.pendingWindows[0].cursor, 'historical-cursor');
-  assert.ok(result.sync.hourly.pendingWindows.some(window => window.method === 'search' && window.cursor === 'legacy-search-cursor'));
-  assert.ok(result.sync.hourly.pendingWindows.some(window => window.method === 'mentions' && window.cursor === 'new-mentions-cursor'));
-  assert.equal(result.sync.hourly.method, 'mentions'); assert.equal(result.sync.hourly.lastSuccessAt, START);
+  assert.ok(result.sync.hourly.pendingWindows.some(window => window.kind === 'legacy-recent' && window.cursor === ''));
+  assert.ok(result.sync.hourly.pendingWindows.some(window => window.method === 'search-posts-v1' && window.cursor === 'new-mentions-cursor'));
+  assert.equal(result.sync.hourly.method, 'search-posts-v1'); assert.equal(result.sync.hourly.lastSuccessAt, START);
   assert.equal(result.sync.hourly.completedThrough, null); assert.equal(result.sync.hourly.latestWindow.status, 'pending');
 });
 
 test('every subsequent hourly call starts a new current window and retains older unexhausted pages', async () => {
   const calls = [], provider = hourlyClient(async args => { calls.push(args); return { tweets: [], hasNextPage: true, nextCursor: 'tail-' + calls.length }; });
   // Empty continuation is intentionally an anomaly, so use a valid page instead.
-  provider.mentionsPage = async args => { calls.push(args); return { tweets: [hourTweet('500' + calls.length, new Date(args.untilTime * 1000 - 60000).toISOString())], hasNextPage: true, nextCursor: 'tail-' + calls.length }; };
+  provider.searchPage = async value => { const args = legacyArgs(value); calls.push(args); return { tweets: [hourTweet('500' + calls.length, new Date(args.untilTime * 1000 - 60000).toISOString())], hasNextPage: true, nextCursor: 'tail-' + calls.length }; };
   let result = await advanceHourlyDiscovery(wb(data([], [])), { now: START, client: provider });
   result = await advanceHourlyDiscovery(result, { now: '2026-11-17T13:00:00Z', client: provider });
   assert.equal(calls.length, 2); assert.equal(calls[1].cursor, '');
@@ -440,18 +459,19 @@ test('hourly authentication and credits failures pause both lanes without erasin
 
 test('legacy search cursors are never sent to the new mentions endpoint', async () => {
   const legacy = { start: '2026-11-16T22:00:00.000Z', endExclusive: '2026-11-16T23:00:00.000Z', cursor: 'old-search', previousOldest: null, seenCursors: ['old-search'] };
-  const searches = [], mentions = [], provider = { searchPage: async args => { searches.push(args); return emptyPage(); }, mentionsPage: async args => { mentions.push(args); return emptyPage(); } };
+  const searches = [], provider = { searchPage: async args => { searches.push(args); return emptyPage(); } };
   let result = await advanceHourlyDiscovery(wb(data([], []), { discovery: { recentWindow: legacy, pendingWindows: [] } }), { now: START, client: provider });
   result = await advanceHourlyDiscovery(result, { now: '2026-11-17T12:00:06Z', client: provider, lane: 'catchup' });
-  assert.equal(mentions.length, 1); assert.equal(mentions[0].cursor, ''); assert.equal(searches[0].cursor, 'old-search');
-  assert.ok(searches[0].query.includes('until_time:' + Date.parse(legacy.endExclusive) / 1000));
+  assert.equal(searches.length, 2); assert.equal(searches[0].cursor, ''); assert.equal(searches[1].cursor, '');
+  assert.ok(searches.every(call => call.query.includes('-filter:replies')));
+  assert.ok(searches[1].query.includes('until_time:' + Date.parse(legacy.endExclusive) / 1000));
 });
 
 test('hourly cursor cycles and empty continuations split into independent same-method recovery windows', async () => {
   for (const makePage of [() => ({ tweets: [], hasNextPage: true, nextCursor: 'empty' }), () => ({ tweets: [hourTweet('8000')], hasNextPage: true, nextCursor: '' })]) {
     const result = await advanceHourlyDiscovery(wb(data([], [])), { now: START, client: hourlyClient(async () => makePage()) });
     assert.equal(result.sync.hourly.pendingWindows.length, 2); assert.equal(result.sync.hourly.splitWindows, 1);
-    assert.ok(result.sync.hourly.pendingWindows.every(window => window.method === 'mentions' && window.cursor === ''));
+    assert.ok(result.sync.hourly.pendingWindows.every(window => window.method === 'search-posts-v1' && window.cursor === ''));
     assert.equal(result.sync.hourly.completedThrough, null); assert.equal(result.sync.hourly.latestWindow.status, 'split');
   }
   const result = await advanceHourlyDiscovery(wb(data([], [])), { now: START, client: hourlyClient(async () => { throw Object.assign(new Error('Некоректний курсор наступної сторінки.'), { code: 'INVALID_RESPONSE' }); }) });
@@ -486,28 +506,30 @@ test('hourly fresh search crosses UTC month boundaries without discarding the pr
 
 test('catchup drains the current mentions tail before a stale legacy cursor', async () => {
   const legacy = { start: '2026-11-16T22:00:00.000Z', endExclusive: '2026-11-16T23:00:00.000Z', cursor: 'old-search', previousOldest: null, seenCursors: ['old-search'] };
-  const calls = [], provider = { searchPage: async args => { calls.push(['legacy', args.cursor]); return emptyPage(); }, mentionsPage: async args => {
+  const calls = [], provider = { searchPage: async args => {
+    if (args.query.includes('since_time:' + Date.parse(legacy.start) / 1000)) { calls.push(['legacy', args.cursor]); return emptyPage(); }
     calls.push(['mentions', args.cursor]); return args.cursor ? { tweets: [hourTweet('9301', '2026-11-17T11:20:00Z')], hasNextPage: false, nextCursor: null }
       : { tweets: [hourTweet('9300')], hasNextPage: true, nextCursor: 'current-tail' };
   } };
   let result = await advanceHourlyDiscovery(wb(data([], []), { discovery: { recentWindow: legacy, pendingWindows: [] } }), { now: START, client: provider });
   result = await advanceHourlyDiscovery(result, { now: '2026-11-17T12:00:06Z', client: provider, lane: 'catchup' });
   assert.deepEqual(calls, [['mentions', ''], ['mentions', 'current-tail']]);
-  assert.ok(result.sync.hourly.pendingWindows.some(window => window.cursor === 'old-search'));
+  assert.ok(result.sync.hourly.pendingWindows.some(window => window.kind === 'legacy-recent' && window.cursor === ''));
   assert.ok(!result.sync.hourly.pendingWindows.some(window => window.cursor === 'current-tail'));
 });
 
 test('every sixth catchup attempt gives the oldest queue a turn and then returns to the current tail', async () => {
   const legacy = { start: '2026-11-16T22:00:00.000Z', endExclusive: '2026-11-16T23:00:00.000Z', cursor: 'old-search', previousOldest: null, seenCursors: ['old-search'] };
   const calls = []; let mentionPages = 0;
-  const provider = { searchPage: async args => { calls.push(['legacy', args.cursor]); return emptyPage(); }, mentionsPage: async args => {
+  const provider = { searchPage: async args => {
+    if (args.query.includes('since_time:' + Date.parse(legacy.start) / 1000)) { calls.push(['legacy', args.cursor]); return emptyPage(); }
     mentionPages++; calls.push(['mentions', args.cursor]);
     return { tweets: [hourTweet(String(9400 + mentionPages), new Date(Date.parse(START) - mentionPages * 60000).toISOString())], hasNextPage: true, nextCursor: 'tail-' + mentionPages };
   } };
   let result = await advanceHourlyDiscovery(wb(data([], []), { discovery: { recentWindow: legacy, pendingWindows: [] } }), { now: START, client: provider });
   for (let step = 1; step <= 7; step++) result = await advanceHourlyDiscovery(result, { now: new Date(Date.parse(START) + step * 6000).toISOString(), client: provider, lane: 'catchup' });
   assert.deepEqual(calls.map(call => call[0]), ['mentions', 'mentions', 'mentions', 'mentions', 'mentions', 'mentions', 'legacy', 'mentions']);
-  assert.equal(calls[6][1], 'old-search'); assert.equal(calls[7][1], 'tail-6');
+  assert.equal(calls[6][1], ''); assert.equal(calls[7][1], 'tail-6');
   assert.equal(result.sync.hourly.catchupRequestCount, 7); assert.equal(result.sync.hourly.catchupPages, 7);
   assert.ok(!result.sync.hourly.pendingWindows.some(window => window.cursor === 'old-search'));
 });
@@ -515,14 +537,15 @@ test('every sixth catchup attempt gives the oldest queue a turn and then returns
 test('failing current catchup pages cannot prevent the sixth attempt from serving the oldest queue', async () => {
   const legacy = { start: '2026-11-16T22:00:00.000Z', endExclusive: '2026-11-16T23:00:00.000Z', cursor: 'old-search', previousOldest: null, seenCursors: ['old-search'] };
   const calls = []; let first = true;
-  const provider = { searchPage: async args => { calls.push(['legacy', args.cursor]); return emptyPage(); }, mentionsPage: async args => {
+  const provider = { searchPage: async args => {
+    if (args.query.includes('since_time:' + Date.parse(legacy.start) / 1000)) { calls.push(['legacy', args.cursor]); return emptyPage(); }
     calls.push(['mentions', args.cursor]);
     if (first) { first = false; return { tweets: [hourTweet('9500')], hasNextPage: true, nextCursor: 'failing-tail' }; }
     throw Object.assign(new Error('SECRET'), { code: 'NETWORK_ERROR' });
   } };
   let result = await advanceHourlyDiscovery(wb(data([], []), { discovery: { recentWindow: legacy, pendingWindows: [] } }), { now: START, client: provider });
   for (let step = 1; step <= 6; step++) result = await advanceHourlyDiscovery(result, { now: result.sync.hourly.nextAttemptAt, client: provider, lane: 'catchup' });
-  assert.equal(calls.at(-1)[0], 'legacy'); assert.equal(calls.at(-1)[1], 'old-search');
+  assert.equal(calls.at(-1)[0], 'legacy'); assert.equal(calls.at(-1)[1], '');
   assert.equal(result.sync.hourly.catchupRequestCount, 6); assert.equal(result.sync.hourly.catchupPages, 1);
   assert.equal(result.sync.hourly.lastSuccessAt, START); assert.ok(result.sync.hourly.pendingWindows.some(window => window.cursor === 'failing-tail'));
 });
@@ -530,13 +553,13 @@ test('failing current catchup pages cannot prevent the sixth attempt from servin
 test('current-hour split recovery also takes priority over older legacy catchup', async () => {
   const legacy = { start: '2026-11-16T22:00:00.000Z', endExclusive: '2026-11-16T23:00:00.000Z', cursor: 'old-search', previousOldest: null, seenCursors: ['old-search'] };
   const calls = []; let first = true;
-  const provider = { searchPage: async () => { throw new Error('Legacy should wait for current split recovery.'); }, mentionsPage: async args => {
-    calls.push(args); if (first) { first = false; return { tweets: [], hasNextPage: true, nextCursor: 'stalled' }; } return emptyPage();
+  const provider = { searchPage: async value => {
+    const args = legacyArgs(value); calls.push(args); if (first) { first = false; return { tweets: [], hasNextPage: true, nextCursor: 'stalled' }; } return emptyPage();
   } };
   let result = await advanceHourlyDiscovery(wb(data([], []), { discovery: { recentWindow: legacy, pendingWindows: [] } }), { now: START, client: provider });
   const children = result.sync.hourly.pendingWindows.filter(window => window.kind === 'recovery').sort((a, b) => Date.parse(b.start) - Date.parse(a.start));
   assert.equal(children.length, 2);
   result = await advanceHourlyDiscovery(result, { now: '2026-11-17T12:00:06Z', client: provider, lane: 'catchup' });
   assert.equal(calls[1].sinceTime, Date.parse(children[0].start) / 1000); assert.equal(calls[1].cursor, '');
-  assert.ok(result.sync.hourly.pendingWindows.some(window => window.cursor === 'old-search'));
+  assert.ok(result.sync.hourly.pendingWindows.some(window => window.kind === 'legacy-recent' && window.cursor === ''));
 });

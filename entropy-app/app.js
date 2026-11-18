@@ -23,7 +23,8 @@
     if (saved?.version === 1 && saved.dataset) {
       const restoredDataset = M.validateDataset(saved.dataset);
       const restoredState = M.validateState(saved.state);
-      dataset = restoredDataset; state = restoredState;
+      if (!window.EntropyLocalDatabase) dataset = restoredDataset;
+      state = restoredState;
     }
   } catch (_) { /* The bundled data remains intact if a saved copy cannot be read. */ }
   if (!['leaderboard', 'audience', 'method', 'settings'].includes(state.ui.view)) state.ui.view = 'leaderboard';
@@ -257,8 +258,11 @@
   function avatar(author, size = '') {
     const handle = String(author.handle || ''), initials = (author.displayName || handle).trim().split(/\s+/).slice(0, 2).map(word => Array.from(word)[0] || '').join('').slice(0, 2).toUpperCase();
     const tone = [...handle].reduce((sum, char) => sum + char.charCodeAt(0), 0) % 6;
-    return '<span class="creator-avatar ' + size + ' avatar-tone-' + tone + '" aria-hidden="true">' + esc(initials || handle.slice(0, 2).toUpperCase()) + '</span>';
+    let image = '';
+    try { const url = new URL(author.avatarUrl); if (url.protocol === 'https:' && url.hostname === 'pbs.twimg.com' && !url.port && !url.username && !url.password) image = '<img class="creator-avatar-image" src="' + esc(url.href) + '" alt="" loading="lazy" referrerpolicy="no-referrer">'; } catch (_) {}
+    return '<span class="creator-avatar ' + size + ' avatar-tone-' + tone + '" aria-hidden="true">' + esc(initials || handle.slice(0, 2).toUpperCase()) + image + '</span>';
   }
+  document.addEventListener('error', event => { if (event.target.classList?.contains('creator-avatar-image')) event.target.remove(); }, true);
   function boardMetric(author) { return state.ui.sort === 'score' ? author.participates ? author.score.score : null : author.metrics[state.ui.sort]; }
   function renderTopCreators(rows) {
     const leaders = rows.filter(author => author.participates && boardMetric(author) !== null).slice(0, 3);

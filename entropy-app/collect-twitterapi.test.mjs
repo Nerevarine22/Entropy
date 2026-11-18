@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { makePlan, collectSearch } from './collect-twitterapi.mjs';
 
-const tweet = (id, createdAt = '2026-11-01T10:00:00Z', userName = 'creator') => ({ id, createdAt, text: 'A post about @Entropy',
+const tweet = (id, createdAt = '2026-11-01T10:00:00Z', userName = 'creator') => ({ id, createdAt, isReply: false, text: 'A post about @Entropy',
   author: { id: userName === 'Entropy' ? '100' : '200', userName, name: userName, followers: 12 },
   viewCount: 50, likeCount: 2, retweetCount: 0, quoteCount: 0, replyCount: 1 });
 const config = { handle: 'Entropy', start: '2026-11-01', end: '2026-11-03', maxRequests: 2 };
@@ -15,6 +15,11 @@ test('daily UTC windows have exclusive end and require bounded valid inputs', ()
   assert.equal(p.windows[0].endExclusive, p.windows[1].start);
   assert.equal(makePlan({ start: config.start, end: config.end }).handle, 'entropyIO');
   for (const change of [{ handle: 'Entropy OR a' }, { end: '2026-11-00' }, { maxRequests: Infinity }, { maxRequests: 0 }]) assert.throws(() => makePlan({ ...config, ...change }));
+});
+test('replies and posts with an unknown type are excluded', async () => {
+  const reply = { ...tweet('222'), isReply: true }, unknown = tweet('333'); delete unknown.isReply;
+  const d = await collectSearch({ plan: { ...config, end: '2026-11-02' }, now: clock, client: { searchPage: async () => ({ tweets: [tweet('111'), reply, unknown], hasNextPage: false }) } });
+  assert.deepEqual(d.posts.map(p => p.id), ['111']);
 });
 test('request budget stops pagination without claiming complete coverage', async () => {
   const requests = [], sleeps = [];

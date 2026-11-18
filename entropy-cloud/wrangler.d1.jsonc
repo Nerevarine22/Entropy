@@ -1,0 +1,13 @@
+{
+  // Database administration configuration; the hosted app binds this database as DB.
+  "name": "entropy-workbench-d1-admin",
+  "compatibility_date": "2026-11-18",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "entropy-workbench",
+      "database_id": "d6974c71-6d24-42d1-92c4-24d2f6608807",
+      "migrations_dir": "drizzle"
+    }
+  ]
+}

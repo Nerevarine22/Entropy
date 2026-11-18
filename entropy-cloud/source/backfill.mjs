@@ -104,7 +104,7 @@ function normalizePage(tweets, observedAt, current) {
   const normalizedNonReposts = data.posts.length;
   const mentionIds = new Set(tweets.filter(directlyMentioned).map(t => t.id));
   const from = Date.parse(current.start), until = Date.parse(current.endExclusive);
-  data.posts = data.posts.filter(post => mentionIds.has(post.id) && post.authorHandle.toLowerCase() !== TARGET.toLowerCase()
+  data.posts = data.posts.filter(post => post.isReply === false && mentionIds.has(post.id) && post.authorHandle.toLowerCase() !== TARGET.toLowerCase()
     && Date.parse(post.publishedAt) >= from && Date.parse(post.publishedAt) < until);
   const authorIds = new Set(data.posts.map(post => post.authorId));
   data.authors = data.authors.filter(author => authorIds.has(author.id));
@@ -121,7 +121,7 @@ function missingKnownPosts(result, range, legacyOnly = false) {
   const from = Date.parse(range.start), until = Date.parse(range.endExclusive), startedAt = Date.parse(job.startedAt);
   return result.dataset.posts.filter(post => {
     const published = Date.parse(post.publishedAt), measured = Date.parse(post.metricsAsOf);
-    return published >= from && published < until && !observed.has(post.id) &&
+    return post.isReply !== true && published >= from && published < until && !observed.has(post.id) &&
       typeof post.authorHandle === 'string' && post.authorHandle.toLowerCase() !== TARGET.toLowerCase() &&
       directlyMentioned({ text: post.body }) &&
       (!legacyOnly || !Number.isFinite(measured) || measured < startedAt);
@@ -237,9 +237,13 @@ export async function advanceBackfill(workbench, { client, now } = {}) {
   const current = copy(job.pendingWindows[0]);
   const method = job.method || 'search';
   if (!collectionMethods.has(method)) throw new Error('Invalid backfill method checkpoint.');
-  if (!client || typeof client[method === 'mentions' ? 'mentionsPage' : 'searchPage'] !== 'function') throw new Error('A read-only collection client is required.');
+  if (!client || typeof client.searchPage !== 'function') throw new Error('A read-only collection client is required.');
   const from = time(current.start, 'checkpoint start'), until = time(current.endExclusive, 'checkpoint end');
   if (until <= from || typeof current.cursor !== 'string' || !Array.isArray(current.seenCursors)) throw new Error('Invalid backfill checkpoint.');
+  if (current.queryVersion !== 'posts-v1') {
+    current.cursor = ''; current.previousOldest = null; current.seenCursors = []; current.queryVersion = 'posts-v1';
+    job.pendingWindows[0] = current;
+  }
   if (method === 'id-search') { idBound(from); idBound(until); }
   job.lastAttemptAt = at; job.requestCount++;
   sync.lastAttemptAt = at; sync.requestCount = (Number.isInteger(sync.requestCount) ? sync.requestCount : 0) + 1;
@@ -247,9 +251,7 @@ export async function advanceBackfill(workbench, { client, now } = {}) {
     const query = method === 'id-search'
       ? '@' + TARGET + ' since_id:' + idBound(from) + ' max_id:' + idBound(until)
       : '@' + TARGET + ' since_time:' + Math.floor(from / 1000) + ' until_time:' + Math.floor(until / 1000);
-    const page = method === 'mentions'
-      ? await client.mentionsPage({ userName: TARGET, sinceTime: Math.floor(from / 1000), untilTime: Math.floor(until / 1000), cursor: current.cursor })
-      : await client.searchPage({ query, cursor: current.cursor });
+    const page = await client.searchPage({ query: query + ' -filter:replies', cursor: current.cursor });
     if (!page || !Array.isArray(page.tweets) || typeof page.hasNextPage !== 'boolean') throw new Error('Invalid discovery response.');
     const times = page.tweets.map(tweet => Date.parse(tweet?.createdAt)).filter(Number.isFinite);
     job.lastPageStats = { rawTweets: page.tweets.length, normalizedNonReposts: null, inRangeMentions: null,

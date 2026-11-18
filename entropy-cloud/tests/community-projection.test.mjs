@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
+import { fileURLToPath } from 'node:url';
 import { Model } from '../lib/entropy-engine.mjs';
 
-const result = await build({ entryPoints: [new URL('../lib/community-projection.ts', import.meta.url).pathname], bundle: true,
+const result = await build({ entryPoints: [fileURLToPath(new URL('../lib/community-projection.ts', import.meta.url))], bundle: true,
   format: 'esm', platform: 'node', target: 'node22', write: false });
 const { projectCommunitySnapshot, publishCommunitySnapshot } = await import('data:text/javascript;base64,' + Buffer.from(result.outputFiles[0].text).toString('base64'));
 const now = new Date('2026-11-18T12:00:00Z');

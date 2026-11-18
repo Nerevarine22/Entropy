@@ -150,10 +150,16 @@ export function normalizeTweets(tweets, { observedAt, query = '', periodStart, p
     const previousAuthor = authors.get(author.id);
     if (previousAuthor && previousAuthor.handle.toLowerCase() !== author.userName.toLowerCase()) invalid('Суперечливі імена одного автора у знімку.');
     const followers = count(author.followers, 'followers');
-    authors.set(author.id, { id: author.id, handle: author.userName, displayName: typeof author.name === 'string' ? author.name : author.userName,
+    let avatarUrl = previousAuthor?.avatarUrl ?? null;
+    try {
+      const image = new URL(author.profilePicture);
+      if (image.protocol === 'https:' && image.hostname === 'pbs.twimg.com' && !image.username && !image.password && !image.port) avatarUrl = image.href;
+    } catch (_) { /* An unavailable avatar is optional. */ }
+    authors.set(author.id, { id: author.id, handle: author.userName, displayName: typeof author.name === 'string' ? author.name : author.userName, avatarUrl,
       followers: followers ?? previousAuthor?.followers ?? null, smartFollowersComplete: false, smartEngagementComplete: false });
     posts.set(tweet.id, {
       id: tweet.id, authorId: author.id, authorHandle: author.userName, date, publishedAt,
+      isReply: tweet.isReply === true || numericId(tweet.inReplyToId) ? true : tweet.isReply === false ? false : null,
       url: 'https://x.com/' + author.userName + '/status/' + tweet.id,
       summary: '', body: typeof tweet.text === 'string' ? tweet.text : null,
       metrics: { impressions: count(tweet.viewCount, 'viewCount'), likes: count(tweet.likeCount, 'likeCount'),
@@ -163,7 +169,7 @@ export function normalizeTweets(tweets, { observedAt, query = '', periodStart, p
       // conversationId is retained as evidence, never used to group other authors' work.
       conversationId: numericId(tweet.conversationId) ? tweet.conversationId : null,
       inReplyToId: numericId(tweet.inReplyToId) ? tweet.inReplyToId : null,
-      isReply: tweet.isReply === true, isQuote: !!tweet.quoted_tweet,
+      isQuote: !!tweet.quoted_tweet,
     });
   }
   const dates = [...posts.values()].map(post => post.date).sort();

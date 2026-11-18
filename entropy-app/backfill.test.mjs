@@ -7,7 +7,7 @@ import { beginBackfill, advanceBackfill } from './backfill.mjs';
 const NOW = '2026-11-18T00:00:00.750Z';
 const START = '2026-11-01T00:00:00Z';
 const END = '2026-11-03T12:00:00.750Z';
-const tweet = (id, at = '2026-11-01T12:00:00Z', changes = {}) => ({ id, createdAt: at, text: 'Useful @entropyIO explanation',
+const tweet = (id, at = '2026-11-01T12:00:00Z', changes = {}) => ({ id, createdAt: at, isReply: false, text: 'Useful @entropyIO explanation',
   author: { id: '200', userName: 'creator', name: 'Creator', followers: 50 },
   viewCount: 100, likeCount: 3, replyCount: 2, retweetCount: 1, quoteCount: 0, ...changes });
 function wb(tweets = [], sync = {}) {
@@ -75,9 +75,8 @@ test('collection methods have separate frozen jobs and cannot reuse an active me
   assert.equal(mentions.sync.backfill.requestCount, 0); assert.equal(mentions.sync.requestCount, search.sync.requestCount);
   let calls = 0;
   mentions = await advanceBackfill(mentions, { now: mentions.sync.backfill.nextAttemptAt, client: {
-    searchPage: async () => { throw new Error('Wrong method'); },
-    mentionsPage: async args => {
-      calls++; assert.deepEqual(args, { userName: 'entropyIO', sinceTime: 1793491200, untilTime: 1793577600, cursor: '' });
+    searchPage: async args => {
+      calls++; assert.deepEqual(args, { query: '@entropyIO since_time:1793491200 until_time:1793577600 -filter:replies', cursor: '' });
       return { tweets: [tweet('111')], hasNextPage: true, nextCursor: 'mentions-only-cursor' };
     }
   } });
@@ -99,7 +98,7 @@ test('ID-search uses exact BigInt Nov2 bounds and independently enforces the hal
   assert.match(original.sync.backfill.id, /^backfill:id-search:/); assert.equal(original.sync.backfill.method, 'id-search');
   let calls = 0;
   const result = await step(original, async args => {
-    calls++; assert.deepEqual(args, { query: '@entropyIO since_id:2117044012446646271 max_id:2117406400312246271', cursor: '' });
+    calls++; assert.deepEqual(args, { query: '@entropyIO since_id:2117044012446646271 max_id:2117406400312246271 -filter:replies', cursor: '' });
     return exhausted([tweet('2117200000000000001', '2026-11-02T12:00:00Z'),
       tweet('2117000000000000001', '2026-11-01T23:59:59Z'), tweet('2117500000000000001', '2026-11-03T00:00:00Z'),
       tweet('2117200000000000002', '2026-11-02T13:00:00Z', { text: '@entropyIOther' }),
@@ -131,7 +130,7 @@ test('only one direct-mention search page is requested; raw views and missing va
   let count = 0;
   const result = await step(begin(), async ({ query, cursor }) => {
     count++; assert.equal(cursor, '');
-    assert.equal(query, '@entropyIO since_time:1793491200 until_time:1793577600');
+    assert.equal(query, '@entropyIO since_time:1793491200 until_time:1793577600 -filter:replies');
     return exhausted([tweet('111'), tweet('112', '2026-11-01T13:00:00Z', { likeCount: null }),
       tweet('113', '2026-10-31T23:59:59Z'), tweet('114', undefined, { text: '@entropyIOther' }),
       tweet('115', undefined, { author: { id: '201', userName: 'entropyIO' } }), tweet('116', undefined, { isRetweet: true })]);
@@ -272,14 +271,21 @@ test('auth and credits pause safely; disabled or paused collectors never make a 
   }
 });
 test('rate limits preserve exact cursor and defer retries with safe diagnostics', async () => {
-  const original = begin(); original.sync.backfill.pendingWindows[0].cursor = 'keep-me';
+  const original = begin(); original.sync.backfill.pendingWindows[0].cursor = 'keep-me'; original.sync.backfill.pendingWindows[0].queryVersion = 'posts-v1';
   const result = await step(original, async () => { throw new TwitterApiError('RATE_LIMITED', 'secret', 429); });
   assert.equal(result.sync.backfill.status, 'waiting'); assert.equal(result.sync.paused, false);
   assert.equal(result.sync.backfill.pendingWindows[0].cursor, 'keep-me'); assert.equal(result.sync.backfill.lastError.httpStatus, 429);
   assert.ok(Date.parse(result.sync.backfill.nextAttemptAt) > Date.parse(result.sync.backfill.lastAttemptAt));
 });
+test('legacy backfill cursor is restarted for filtered search without resetting the request count', async () => {
+  const original = begin(); original.sync.backfill.pendingWindows[0].cursor = 'legacy'; original.sync.backfill.requestCount = 3;
+  let request;
+  const result = await step(original, async args => { request = args; return exhausted([tweet('111'), tweet('112', undefined, { isReply: true })]); });
+  assert.equal(request.cursor, ''); assert.match(request.query, /-filter:replies/);
+  assert.equal(result.sync.backfill.requestCount, 4); assert.deepEqual(result.dataset.posts.map(p => p.id), ['111']);
+});
 test('malformed pages and ownership conflicts never commit data or consume the stored cursor', async () => {
-  const original = begin(wb([tweet('111')])); original.sync.backfill.pendingWindows[0].cursor = 'original';
+  const original = begin(wb([tweet('111')])); original.sync.backfill.pendingWindows[0].cursor = 'original'; original.sync.backfill.pendingWindows[0].queryVersion = 'posts-v1';
   const before = structuredClone(original.dataset);
   const result = await step(original, async () => exhausted([tweet('111', undefined, { author: { id: '999', userName: 'other' } })]));
   assert.deepEqual(result.dataset, before); assert.equal(result.sync.backfill.pendingWindows[0].cursor, 'original');

@@ -26,7 +26,7 @@ export function makePlan({ handle = DEFAULT_HANDLE, start, end, maxRequests = 5 
   for (let time = from; time < until; time += DAY) {
     const endTime = Math.min(time + DAY, until);
     windows.push({ start: new Date(time).toISOString(), endExclusive: new Date(endTime).toISOString(),
-      query: '@' + handle + ' since_time:' + time / 1000 + ' until_time:' + endTime / 1000 });
+      query: '@' + handle + ' since_time:' + time / 1000 + ' until_time:' + endTime / 1000 + ' -filter:replies' });
   }
   return { provider: 'twitterapi.io', handle, start, end, maxRequests, windows };
 }
@@ -68,7 +68,7 @@ export async function collectSearch({ client, plan, wait = ms => new Promise(res
     Array.isArray(t.entities?.user_mentions) && t.entities.user_mentions.some(m => typeof m?.screen_name === 'string' && m.screen_name.toLowerCase() === plan.handle.toLowerCase())).map(t => t.id));
   // Providers can return boundary duplicates or own-project posts. Both are excluded explicitly.
   const ownIds = new Set(dataset.authors.filter(a => a.handle.toLowerCase() === plan.handle.toLowerCase()).map(a => a.id));
-  dataset.posts = dataset.posts.filter(p => directMentionIds.has(p.id) && !ownIds.has(p.authorId) && p.date >= plan.start && p.date < plan.end);
+  dataset.posts = dataset.posts.filter(p => directMentionIds.has(p.id) && !ownIds.has(p.authorId) && p.isReply === false && p.date >= plan.start && p.date < plan.end);
   const authorIds = new Set(dataset.posts.map(p => p.authorId));
   dataset.authors = dataset.authors.filter(a => authorIds.has(a.id));
   dataset.meta.collection = { startedAt, finishedAt: observedAt, requestCount: requests, requestLimit: plan.maxRequests,
