@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="description" content="Закритий кабінет Entropy для перегляду внеску кріейторів і ручної модерації.">
+  <title>Entropy — Contributors</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Перейти до вмісту</a>
+  <div class="app-shell">
+    <header class="app-header">
+      <div class="brand" aria-label="Entropy Contributors">
+        <span class="brand-name">entropy<span class="brand-dot">.</span></span>
+        <span class="brand-divider" aria-hidden="true">/</span>
+        <span class="brand-product">Contributors</span>
+      </div>
+      <nav class="main-nav" aria-label="Розділи кабінету">
+      <button type="button" class="nav-button active" data-view="leaderboard" aria-controls="view-leaderboard">Лідерборд</button>
+      <button type="button" class="nav-button" data-view="audience" aria-controls="view-audience">Аудиторія</button>
+      <button type="button" class="nav-button" data-view="method" aria-controls="view-method">Методика</button>
+      <button type="button" class="nav-button" data-view="settings" aria-controls="view-settings">Дані та налаштування</button>
+      </nav>
+      <div class="header-meta"><span class="collector-label" id="collector-label">Перевіряємо збір</span><span class="private-label">Закритий кабінет</span><span class="prototype-label">Локальний прототип</span></div>
+    </header>
+
+    <div class="source-banner" id="source-status" role="status">Історичний знімок · X не підключено</div>
+
+    <main id="main-content">
+      <section id="view-leaderboard" class="app-view" aria-labelledby="leaderboard-title">
+        <div class="section-heading">
+          <div><div class="eyebrow">ENTROPY CONTRIBUTORS</div><h1 id="leaderboard-title">Лідерборд кріейторів</h1></div>
+          <div class="heading-actions"><button type="button" class="action-button ghost" data-action="import">Імпортувати дані</button><button type="button" class="action-button" data-action="export">Зберегти копію</button></div>
+        </div>
+
+        <div class="filters" aria-label="Фільтри лідерборду">
+          <label class="field search-field"><span class="form-label">Пошук автора</span><input class="form-input" id="search" type="search" placeholder="Знайти кріейтора" autocomplete="off"></label>
+          <label class="field"><span class="form-label">Період</span><select class="form-select" id="period"><option value="2026-11">Листопад 2026 · UTC</option><option value="2026-10">Жовтень 2026 · UTC</option><option value="sample">Дослідницька вибірка · 17.10–16.11</option></select></label>
+          <label class="field"><span class="form-label">Сортування</span><select class="form-select" id="sort"><option value="impressions">За переглядами ↓</option><option value="score">За Score ↓</option><option value="likes">За лайками ↓</option><option value="replies">За коментарями ↓</option></select></label>
+          <label class="field"><span class="form-label">Статус</span><select class="form-select" id="status-filter"><option value="active">Активні</option><option value="review">На перевірці</option><option value="excluded">Не зараховані</option><option value="banned">Забанені</option><option value="all">Усі автори</option></select></label>
+        </div>
+
+        <div id="freshness-note" class="freshness-note"></div>
+        <div id="summary" class="summary-row" aria-live="polite"></div>
+        <section id="top-creators" class="top-creators" aria-label="Три лідери поточного перегляду" hidden></section>
+        <div id="period-note" class="period-note"></div>
+
+        <div id="board-layout" class="board-layout">
+          <div class="table-region">
+            <div class="table-scroll">
+              <table class="leaderboard-table" aria-label="Рейтинг кріейторів Entropy">
+                <thead><tr><th scope="col" class="place-column">#</th><th scope="col" class="author-column">Кріейтор</th><th scope="col" class="num" data-sort-heading="score">Score</th><th scope="col" class="num">Пости</th><th scope="col" class="num" data-sort-heading="impressions">Перегляди</th><th scope="col" class="num" title="(Лайки + репости + цитати) ÷ перегляди × 100">Engagement %</th><th scope="col" class="num" data-sort-heading="likes">Лайки</th><th scope="col" class="num">Репости</th><th scope="col" class="num">Цитати</th><th scope="col" class="num" data-sort-heading="replies">Коментарі</th><th scope="col">Статус</th><th scope="col" class="actions-column"><span class="sr-only">Перегляд</span></th></tr></thead>
+                <tbody id="leaderboard-body"></tbody>
+              </table>
+            </div>
+            <p class="empty-state" id="leaderboard-empty" hidden>За вибраними умовами авторів немає.</p>
+            <div class="table-notes"><span>«—» означає невідоме значення, а не нуль.</span><span>Engagement % = (лайки + API-репости + цитати) ÷ перегляди × 100. Коментарі показані окремо.</span></div>
+          </div>
+          <aside id="detail-panel" class="detail-panel" aria-label="Картка кріейтора" hidden></aside>
+        </div>
+      </section>
+
+      <section id="view-audience" class="app-view" aria-labelledby="audience-title" hidden>
+        <div class="section-heading"><div><div class="eyebrow">ОЦІНЮВАННЯ АУДИТОРІЇ</div><h1 id="audience-title">Довіра до акаунтів</h1><p class="section-description">Оцінки та докази для Smart Followers і Smart Engagement.</p></div><button type="button" class="action-button primary" data-action="add-account">Додати оцінку акаунта</button></div>
+        <div id="audience-content"></div>
+      </section>
+
+      <section id="view-method" class="app-view" aria-labelledby="method-title" hidden>
+        <div class="section-heading"><div><div class="eyebrow">ENTROPY SCORE</div><h1 id="method-title">Методика рейтингу</h1><p class="section-description">Складові бала, правила участі та межі перевірки.</p></div></div>
+        <div id="method-content"></div>
+      </section>
+
+      <section id="view-settings" class="app-view" aria-labelledby="settings-title" hidden>
+        <div class="section-heading"><div><div class="eyebrow">ДЖЕРЕЛА ТА ЗБЕРЕЖЕННЯ</div><h1 id="settings-title">Дані та налаштування</h1><p class="section-description">Джерело вибірки, локальне збереження та перенесення результатів.</p></div></div>
+        <div id="settings-content"></div>
+      </section>
+    </main>
+    <footer class="app-footer"><span>Entropy Contributors</span><span>Дослідницький режим</span></footer>
+  </div>
+  <input id="import-file" type="file" accept="application/json,.json" hidden>
+  <div id="modal-root" hidden></div>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <noscript><div class="noscript-message">Для роботи локального кабінету потрібен JavaScript.</div></noscript>
+  <script src="scoring.js"></script>
+  <script src="model.js"></script>
+  <script src="seed.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

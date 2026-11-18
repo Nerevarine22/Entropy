@@ -1,0 +1,16 @@
+import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+const dir = path.dirname(fileURLToPath(import.meta.url));
+const seed = JSON.parse(await readFile(path.join(dir, 'seed.json'), 'utf8'));
+const seedScript = 'window.EntropySeed = ' + JSON.stringify(seed).replaceAll('</', '<\\/') + ';';
+await writeFile(path.join(dir, 'seed.js'), seedScript);
+let html = await readFile(path.join(dir, 'index.html'), 'utf8');
+const css = await readFile(path.join(dir, 'styles.css'), 'utf8');
+html = html.replace('<link rel="stylesheet" href="styles.css">', '<style>' + css + '</style>');
+const scripts = { 'scoring.js': await readFile(path.join(dir, 'scoring.js'), 'utf8'), 'model.js': await readFile(path.join(dir, 'model.js'), 'utf8'), 'seed.js': seedScript, 'app.js': await readFile(path.join(dir, 'app.js'), 'utf8') };
+for (const [name, content] of Object.entries(scripts)) html = html.replace('<script src="' + name + '"></script>', '<script>' + content.replaceAll('</script', '<\\/script') + '</script>');
+const output = path.resolve(dir, '../outputs/entropy-leaderboard.html');
+await mkdir(path.dirname(output), { recursive: true });
+await writeFile(output, html);
+console.log(output);
