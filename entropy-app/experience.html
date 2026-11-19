@@ -70,6 +70,7 @@
                 <tr>
                   <th scope="col">RANK</th>
                   <th scope="col">CREATOR</th>
+                  <th id="score-column" scope="col" class="number" aria-sort="descending" hidden>SCORE</th>
                   <th scope="col" class="number">POSTS</th>
                   <th scope="col" class="number">VIEWS</th>
                   <th scope="col" class="number">LIKES</th>
@@ -90,7 +91,30 @@
         </div>
       </section>
     </section>
-    <section class="page info-page" id="page-methodology" hidden><div class="eyebrow"><span class="status-dot"></span> BEHIND THE NUMBERS</div><h1>How it <span>works.</span></h1><p class="info-lead">A clearer view of the creators contributing to the Entropy conversation.</p><div class="info-grid"><article class="info-card"><span>01 / DISCOVER</span><h2>Find the conversation.</h2><p>We index public X posts that mention @entropyIO. Replies and reposts are excluded.</p></article><article class="info-card"><span>02 / MEASURE</span><h2>Follow the impact.</h2><p>Views and engagement come from the latest available post metrics. Numbers may update at different times. Smart Followers counts are provided by <a href="https://twitterscore.io/" target="_blank" rel="noopener noreferrer">TwitterScore (twitterscore.io)</a>.</p></article><article class="info-card"><span>03 / RANK</span><h2>Make it visible.</h2><p>Creators are currently ranked by total views across indexed posts. A dedicated scoring formula is being developed.</p></article></div><p class="info-note">Coverage is partial. Views are cumulative and do not represent unique people or verified organic reach.</p></section>
+    <section class="page info-page" id="page-methodology" hidden>
+      <div class="eyebrow"><span class="status-dot"></span> BEHIND THE NUMBERS</div>
+      <h1>How it <span>works.</span></h1>
+      <p class="info-lead">A clearer view of the creators contributing to the Entropy conversation.</p>
+      <div class="info-grid">
+        <article class="info-card">
+          <span>01 / DISCOVER</span>
+          <h2>Find the conversation.</h2>
+          <p>We index public X posts that mention @entropyIO. Replies and reposts are excluded.</p>
+        </article>
+        <article class="info-card">
+          <span>02 / MEASURE</span>
+          <h2>Follow the impact.</h2>
+          <p>Views and engagement come from the latest available post metrics. Numbers may update at different times. Smart Followers counts are provided by <a href="https://twitterscore.io/" target="_blank" rel="noopener noreferrer">TwitterScore (twitterscore.io)</a>.</p>
+        </article>
+        <article class="info-card">
+          <span>03 / RANK</span>
+          <h2>Creator Score.</h2>
+          <p id="rank-views-methodology">Creators are ranked by total views across indexed posts.</p>
+          <p id="rank-score-methodology" hidden>Score combines views, weighted reactions, reach relative to audience size, and a capped Smart Followers bonus. Accepted posts add up to 20%. Engagement above 10% can reduce the score once a creator has over 1,000 views. The influence map ranks creators by views.</p>
+        </article>
+      </div>
+      <p class="info-note">Coverage is partial. Views are cumulative and do not represent unique people or verified organic reach.</p>
+    </section>
     <section class="page info-page" id="page-about" hidden><div class="eyebrow"><span class="status-dot"></span> ABOUT THIS PROJECT</div><h1>The community <span>behind Entropy.</span></h1><p class="info-lead">A home for the creators contributing to the Entropy conversation.</p><div class="about-card"><div class="about-pattern" aria-hidden="true"></div><div class="about-content"><span>ENTROPY / CREATORS</span><h2>Good ideas deserve<br>to be seen.</h2><p>Discover creators, explore their posts and see how the conversation is growing.</p><a class="outline-button" href="https://x.com/entropyIO" target="_blank" rel="noopener noreferrer">Follow Entropy on X <span>↗</span></a></div></div></section>
   </main>
   <footer class="footer"><div><span class="footer-brand">entropy<span>.</span></span><span>CREATORS</span></div><span>AN INDEPENDENT COMMUNITY VIEW</span><a href="https://x.com/entropyIO" target="_blank" rel="noopener noreferrer">X / @entropyIO ↗</a></footer>

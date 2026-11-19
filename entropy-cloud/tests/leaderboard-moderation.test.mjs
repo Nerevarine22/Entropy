@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
+import { creatorScore } from '../leaderboard-view.mjs';
 import worker from '../leaderboard-worker.mjs';
 import { localD1Binding } from '../../entropy-app/local-d1.mjs';
 
@@ -67,6 +68,42 @@ const data = async response => {
   assert.equal(response.status, 200);
   return response.json();
 };
+
+test('creator score caps audience and volume bonuses and softens high ER only with enough views', () => {
+  const small = { views: 900, likes: 45, reposts: 0, quotes: 0, followers: 1000, postCount: 1 };
+  assert.equal(creatorScore({ ...small, likes: 270 }), creatorScore(small));
+  assert.equal(creatorScore({ ...small, views: 0 }), null);
+  assert.equal(creatorScore({ ...small, likes: null }), null);
+  assert.equal(creatorScore({ ...small, smartFollowers: 0 }), creatorScore(small));
+  assert(creatorScore({ ...small, smartFollowers: 100 }) > creatorScore({ ...small, smartFollowers: 10 }));
+  assert.equal(creatorScore({ ...small, smartFollowers: 999 }), creatorScore({ ...small, smartFollowers: 10_000 }));
+  assert.equal(creatorScore({ ...small, postCount: 20 }), creatorScore({ ...small, postCount: 21 }));
+
+  const larger = { ...small, views: 6000, likes: 300 };
+  const capped = creatorScore(larger);
+  const penalized = creatorScore({ ...larger, likes: 1300 });
+  assert(Math.abs(penalized - capped * 0.65) < 0.1);
+});
+
+test('public and admin ranking order by score while the map orders by views', async context => {
+  const { call, login, db } = fixture(context);
+  db.exec(`UPDATE entropy_records SET payload=json_set(payload,'$.twitterScore.smartFollowers',999,'$.followers',1000)
+    WHERE kind='author' AND record_id='22'`);
+  const ranking = await data(await call('/api/leaderboard?view=ranking'));
+  assert.equal(ranking.rankingMetric, 'score');
+  assert.deepEqual(ranking.rows.map(row => row.author.id), ['22', '11']);
+  assert.deepEqual(ranking.rows.map(row => row.rank), [1, 2]);
+  assert(ranking.rows[0].score > ranking.rows[1].score);
+  assert.deepEqual(ranking.leaders.map(row => row.author.id), ['11', '22']);
+  const search = await data(await call('/api/leaderboard?view=ranking&q=alice'));
+  assert.equal(search.rows[0].rank, 2);
+  await login();
+  const admin = await data(await call('/api/admin?view=ranking&q=bob'));
+  assert.equal(admin.rows[0].score, ranking.rows[0].score);
+  assert.equal(admin.rows[0].author.followers, undefined);
+  const legacy = await data(await call('/api/leaderboard'));
+  assert(legacy.authors.every(author => !Object.hasOwn(author, 'followers')));
+});
 
 test('admin authenticates before reading or changing moderation state', async context => {
   const { call, login } = fixture(context);

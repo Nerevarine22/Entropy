@@ -3,6 +3,10 @@ import Model from '../entropy-app/model.js';
 export const EARLY_CREATOR_PERIOD = Model.EARLY_CREATOR_PERIOD;
 export const POST_PAGE_SIZE = 10;
 const CREATOR_PAGE_SIZE = 20;
+const REACH_REFERENCE = 20_000;
+const byViews = (a, b) => (b.views ?? -1) - (a.views ?? -1) || a.author.handle.localeCompare(b.author.handle);
+const isCount = value => Number.isSafeInteger(value) && value >= 0;
+const clampUnit = value => Math.max(0, Math.min(value, 1));
 
 export function total(posts, field) {
   let sum = 0;
@@ -12,6 +16,32 @@ export function total(posts, field) {
     sum += value;
   }
   return sum;
+}
+
+export function creatorScore({ views, likes, reposts, quotes, followers, smartFollowers, postCount }) {
+  if (!(views > 0) || ![views, likes, reposts, quotes, postCount].every(isCount)) return null;
+
+  const er = (likes + reposts + quotes) / views;
+  const reachScale = clampUnit(views / REACH_REFERENCE);
+  const reachPoints = 10 * Math.sqrt(views);
+  const audienceQuality = isCount(smartFollowers) ? clampUnit(Math.log10(1 + smartFollowers) / 3) : 0;
+  const audiencePoints = Math.min(540, 0.35 * reachPoints) * audienceQuality;
+
+  const weightedReactions = likes + 3 * reposts + (4 + 2 * reachScale) * quotes;
+  const reactionCap = views * (0.01 + 0.04 * reachScale);
+  const reactionPoints = 0.7 * Math.min(weightedReactions, reactionCap) * reachScale ** 1.5;
+  const efficiencyPoints = isCount(followers)
+    ? 120 * Math.min(Math.log1p(views / Math.max(followers, 1)), 2) * reachScale
+    : 0;
+
+  const postMultiplier = 1 + 0.01 * Math.min(postCount, 20);
+  const erMultiplier = 0.90 + 2 * Math.min(er, 0.05);
+  const erExcess = clampUnit((er - 0.10) / 0.10);
+  const reachConfidence = clampUnit((views - 1000) / 4000);
+  const penaltyMultiplier = 1 - 0.35 * erExcess * reachConfidence;
+  const score = (reachPoints + audiencePoints + reactionPoints + efficiencyPoints)
+    * postMultiplier * erMultiplier * penaltyMultiplier;
+  return Math.round(10 * score) / 10;
 }
 
 export function summarize(dataset) {
@@ -31,18 +61,24 @@ export function summarize(dataset) {
       ? (likes + reposts + quotes) / views * 100 : null;
     return {
       author, views, likes, engagement, postCount: posts.length,
+      score: creatorScore({ views, likes, reposts, quotes, followers: author.followers,
+        smartFollowers: author.twitterScore?.smartFollowers, postCount: posts.length }),
       early: posts.some(Model.isEarlyCreatorPost), postIds: posts.map(post => post.id),
     };
   }).filter(row => row.postCount > 0)
-    .sort((a, b) => (b.views ?? -1) - (a.views ?? -1) || a.author.handle.localeCompare(b.author.handle));
-  rows.forEach((row, index) => { row.rank = index + 1; });
+    .sort((a, b) => (b.score ?? -1) - (a.score ?? -1) || byViews(a, b));
+  rows.forEach((row, index) => { row.rank = row.score === null ? null : index + 1; });
   return {
-    version: crypto.randomUUID(), rows, asOf: dataset.meta.asOf,
+    version: crypto.randomUUID(), rows, leaders: rows.filter(row => row.views > 0).sort(byViews).slice(0, 20),
+    asOf: dataset.meta.asOf,
     totals: { creators: rows.length, posts: dataset.posts.length, views: total(dataset.posts, 'impressions') },
   };
 }
 
-export function creatorSummary({ postIds, ...row }) { return row; }
+export function creatorSummary({ postIds, author, ...row }) {
+  const { followers, ...publicAuthor } = author;
+  return { ...row, author: publicAuthor };
+}
 
 export function requestedPage(value) {
   if (!/^[1-9]\d{0,5}$/.test(value || '')) return 1;
@@ -56,8 +92,8 @@ export function rankPage(snapshot, page, search) {
   page = Math.min(page, totalPages);
   const offset = (page - 1) * CREATOR_PAGE_SIZE;
   return {
-    page, totalPages, offset, total: matches.length, totals: snapshot.totals, asOf: snapshot.asOf,
+    page, totalPages, offset, total: matches.length, totals: snapshot.totals, asOf: snapshot.asOf, rankingMetric: 'score',
     rows: matches.slice(offset, offset + CREATOR_PAGE_SIZE).map(creatorSummary),
-    leaders: snapshot.rows.filter(row => row.views > 0).slice(0, 20).map(creatorSummary),
+    leaders: snapshot.leaders.map(creatorSummary),
   };
 }

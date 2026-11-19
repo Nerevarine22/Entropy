@@ -3,7 +3,9 @@ import { readFile } from 'node:fs/promises';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import { localD1Binding } from '../../entropy-app/local-d1.mjs';
+import { fetchSmartFollowers, SMART_FOLLOWER_INTERVAL, TwitterScoreError } from '../../entropy-app/twitter-score.mjs';
 import { collectLeaderboardPage } from '../leaderboard-ingestion.mjs';
+import { collectSmartFollowers } from '../leaderboard-smart-followers.mjs';
 import worker from '../leaderboard-worker.mjs';
 
 const start = '2026-11-19T09:00:00.000Z';
@@ -59,6 +61,63 @@ function fixture(context) {
 }
 
 const page = (tweets = [], nextCursor = null) => ({ tweets, hasNextPage: Boolean(nextCursor), nextCursor });
+
+test('TwitterScore rejects redirects without forwarding the API key', async () => {
+  await assert.rejects(fetchSmartFollowers('11', 'fixture', async (_url, options) => {
+    assert.equal(options.redirect, 'manual');
+    return Response.redirect('https://example.invalid', 302);
+  }), { code: 'unexpected_redirect' });
+});
+
+test('Smart Followers checks newly discovered authors first and refreshes older observations', async context => {
+  const f = fixture(context);
+  f.env.TWITTERSCORE_API_KEY = 'fixture';
+  const now = clock(5);
+  f.db.prepare(`UPDATE entropy_records SET payload=json_set(payload,'$.twitterScore.checkedAt',?)
+    WHERE kind='author' AND record_id='11'`).run(new Date(now - SMART_FOLLOWER_INTERVAL).toISOString());
+  await f.run(5, { async searchPage() {
+    return page([tweet('102', 3, { author: { id: '12', userName: 'bob', name: 'Bob' } })]);
+  } });
+  const before = await f.ranking();
+  assert.equal(before.rows.find(row => row.author.id === '12').author.twitterScore.smartFollowers, null);
+  const checks = [];
+  const lookup = async id => {
+    checks.push(id);
+    return id === '12' ? 0 : null;
+  };
+  const beforeRevision = f.revision();
+  assert.deepEqual(await collectSmartFollowers(f.env, { now, lookup }), { status: 'checked', checked: 2 });
+  assert.deepEqual(checks, ['12', '11']);
+  assert.equal(f.payload('author', '11').twitterScore.smartFollowers, 200);
+  assert.equal(f.payload('author', '11').twitterScore.status, 'unavailable');
+  assert.equal(f.payload('author', '12').twitterScore.smartFollowers, 0);
+  assert.equal(f.revision(), beforeRevision + 1);
+  const ranking = await f.ranking();
+  assert.equal(ranking.rows.find(row => row.author.id === '12').author.twitterScore.smartFollowers, 0);
+  assert.deepEqual(await collectSmartFollowers(f.env, { now: now + 300_000, lookup }), { status: 'idle' });
+});
+
+test('a TwitterScore error saves completed lookups and pauses only Smart Followers collection', async context => {
+  const f = fixture(context);
+  f.env.TWITTERSCORE_API_KEY = 'fixture';
+  f.add('author', '12', { id: '12', handle: 'bob' });
+  const now = clock(5);
+  const lookup = async id => {
+    if (id === '12') throw new TwitterScoreError('rate_limited', 120);
+    return 200;
+  };
+  const beforeRevision = f.revision();
+  assert.deepEqual(await collectSmartFollowers(f.env, { now, lookup }),
+    { status: 'provider-error', diagnostic: 'rate_limited', checked: 1 });
+  assert.equal(f.revision(), beforeRevision);
+  assert.equal(f.payload('author', '12').twitterScore, undefined);
+  assert.deepEqual(await collectSmartFollowers(f.env, { now: now + 60_000, lookup }), { status: 'deferred' });
+  await f.run(6, { async searchPage() { return page(); } });
+  assert.equal(f.state().smartFollowers.nextAttemptAt, now + 120_000);
+  assert.deepEqual(await collectSmartFollowers(f.env, { now: now + 120_000, lookup: async () => null }),
+    { status: 'checked', checked: 1 });
+  assert.equal(f.payload('author', '12').twitterScore.smartFollowers, null);
+});
 
 test('independent queries collect new posts, publish ranks once, and resume the saved cursor', async context => {
   const f = fixture(context);

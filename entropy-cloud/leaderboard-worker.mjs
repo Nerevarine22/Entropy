@@ -1,6 +1,7 @@
 import { creatorSummary, EARLY_CREATOR_PERIOD, POST_PAGE_SIZE, rankPage, requestedPage, summarize } from './leaderboard-view.mjs';
 import { handleAdmin } from './admin-worker.mjs';
 import { collectLeaderboardPage } from './leaderboard-ingestion.mjs';
+import { collectSmartFollowers } from './leaderboard-smart-followers.mjs';
 import { currentControl, rankingReviews, storedRecords } from './moderation-store.mjs';
 
 const METRICS = ['impressions', 'likes', 'reposts', 'quotes', 'replies'];
@@ -36,6 +37,7 @@ export function publicDataset(records, includeExcluded = false) {
         id, handle: value.handle,
         displayName: typeof value.displayName === 'string' ? value.displayName : value.handle,
         avatarUrl: avatarUrl(value.avatarUrl),
+        ...(includeExcluded ? { followers: count(value.followers) } : {}),
         twitterScore: { smartFollowers: count(value.twitterScore?.smartFollowers) },
       });
     }
@@ -63,6 +65,7 @@ export function publicDataset(records, includeExcluded = false) {
 const publicHeaders = { 'Cache-Control': 'public, max-age=0, must-revalidate', 'X-Content-Type-Options': 'nosniff' };
 const privateHeaders = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' };
 const CACHE_SECONDS = 900;
+const CACHE_NAMESPACE = '/__entropy_cache/v4';
 const cacheFills = new Map();
 
 async function cached(cache, key, build) {
@@ -103,7 +106,7 @@ async function readDataset(db, includeText, generation, includeExcluded = false)
 async function rankingSnapshot(env, url, control) {
   const cache = env.previewCache ?? globalThis.caches?.default;
   const { start, endExclusive } = EARLY_CREATOR_PERIOD;
-  const key = `${url.origin}/__entropy_cache/v3/${control.generation}/${control.revision}/ranking/${start}/${endExclusive}`;
+  const key = `${url.origin}${CACHE_NAMESPACE}/${control.generation}/${control.revision}/ranking/${start}/${endExclusive}`;
   return cached(cache, key, async () => {
     const [dataset, reviews] = await Promise.all([
       readDataset(env.DB, false, control.generation, true), rankingReviews(env.DB, control.generation),
@@ -116,7 +119,7 @@ async function rankingSnapshot(env, url, control) {
     const ranked = new Set(snapshot.rows.map(row => row.author.id));
     const excludedCreators = dataset.authors.filter(author => counts.has(author.id) && !ranked.has(author.id))
       .sort((a,b) => a.handle.localeCompare(b.handle)).map(author => ({
-        author, rank: null, postCount: 0, views: 0, likes: 0, engagement: null, early: false,
+        author, rank: null, postCount: 0, score: null, views: 0, likes: 0, engagement: null, early: false,
       }));
     const adminRows = [...snapshot.rows, ...excludedCreators].map(row => ({ ...row,
       totalPosts: counts.get(row.author.id), review: reviews.get(row.author.id) ?? { status: 'unreviewed' },
@@ -132,8 +135,7 @@ async function adminRanking(env, url) {
   const status = url.searchParams.get('status');
   const rows = ['reviewed', 'needs-review', 'unreviewed'].includes(status)
     ? snapshot.adminRows.filter(row => row.review.status === status) : snapshot.adminRows;
-  const page = rankPage({ ...snapshot, rows }, requestedPage(url.searchParams.get('page')), searchQuery(url));
-  return { ...page, leaders: snapshot.rows.filter(row => row.views > 0).slice(0, 20).map(creatorSummary) };
+  return rankPage({ ...snapshot, rows }, requestedPage(url.searchParams.get('page')), searchQuery(url));
 }
 
 async function readProfilePage(db, id, postIds) {
@@ -167,8 +169,13 @@ async function readProfilePage(db, id, postIds) {
 
 export default {
   async scheduled(_controller, env) {
-    const result = await collectLeaderboardPage(env);
-    if (result.status !== 'idle') console.log('Leaderboard ingestion', result);
+    try {
+      const result = await collectLeaderboardPage(env);
+      if (result.status !== 'idle') console.log('Leaderboard ingestion', result);
+    } finally {
+      const result = await collectSmartFollowers(env);
+      if (result.status === 'checked' || result.status === 'provider-error') console.log('Smart Followers collection', result);
+    }
   },
 
   async fetch(request, env) {
@@ -179,7 +186,7 @@ export default {
     try {
       const cache = env.previewCache ?? globalThis.caches?.default;
       const control = await currentControl(env.DB);
-      const cacheKey = `${url.origin}/__entropy_cache/v3/${control.generation}/${control.revision}/`;
+      const cacheKey = `${url.origin}${CACHE_NAMESPACE}/${control.generation}/${control.revision}/`;
       const view = url.searchParams.get('view');
       // Existing production clients still consume the legacy response during rollout.
       if (view === null) {

@@ -19,6 +19,7 @@
   }
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const format = value => value === null ? '—' : new Intl.NumberFormat('en-US').format(value);
+  const formatScore = new Intl.NumberFormat('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
   const compact = value => value === null ? '—' : new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(value);
   const safeImage = value => { try { const u = new URL(value); return u.protocol === 'https:' && u.hostname === 'pbs.twimg.com' && !u.port && !u.username && !u.password ? u.href : ''; } catch (_) { return ''; } };
   const avatar = person => { const url = safeImage(person.avatarUrl), initial = esc((person.displayName || person.handle || '?').trim().charAt(0).toUpperCase()); return url ? `<img class="avatar" src="${esc(url)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<span class="avatar avatar-fallback" aria-hidden="true">${initial}</span>`; };
@@ -66,6 +67,10 @@
 
   function buildTable(data) {
     const { rows: visible, page, totalPages, offset, total } = data;
+    const rankedByScore = data.rankingMetric === 'score';
+    $('score-column').hidden = !rankedByScore;
+    $('rank-score-methodology').hidden = !rankedByScore;
+    $('rank-views-methodology').hidden = rankedByScore;
     boardPage = page;
     rows = visible;
     $('leaderboard-body').innerHTML = visible.map(row => {
@@ -77,8 +82,9 @@
       return `<tr tabindex="0" role="button" data-creator="${esc(row.author.id)}" aria-label="View ${esc(row.author.handle)} profile${row.early ? ', Early creator' : ''}">
         <td>${rank}</td>
         <td><div class="creator">${avatar(row.author)}<div><div class="creator-name-line"><span class="creator-name">${esc(row.author.displayName || row.author.handle)}</span>${row.early ? earlyBadge : ''}${!admin && row.reviewedAt ? reviewBadge({ status: 'reviewed', reviewedAt: row.reviewedAt }) : ''}</div><span class="creator-handle">@${esc(row.author.handle)}</span></div></div></td>
+        ${rankedByScore ? `<td class="num primary">${Number.isFinite(row.score) ? formatScore.format(row.score) : '—'}</td>` : ''}
         <td class="num">${format(row.postCount)}${admin && row.totalPosts > row.postCount ? `<small class="excluded-count">${format(row.totalPosts - row.postCount)} excluded</small>` : ''}</td>
-        <td class="num primary">${format(row.views)}</td>
+        <td class="num${rankedByScore ? '' : ' primary'}">${format(row.views)}</td>
         <td class="num">${format(row.likes)}</td>
         <td class="num">${row.engagement === null ? '—' : row.engagement.toFixed(2) + '%'}</td>
         <td class="num" data-metric="smart-followers">${format(smartFollowers)}</td>
