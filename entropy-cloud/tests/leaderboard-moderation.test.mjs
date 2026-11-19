@@ -167,11 +167,34 @@ test('campaign scheduler classifies new text, preserves decisions for metrics up
   db.exec(`UPDATE entropy_records SET payload=json_set(payload,'$.body','Changed body')
     WHERE kind='post' AND record_id='111'`);
   const failure = async () => { throw new CampaignModelError(429,600); };
-  assert.deepEqual(await collectCampaignDecisions(env,{now:now+600000,evaluate:failure}),{status:'provider-error',providerStatus:429,saved:0});
-  assert.equal((await collectCampaignDecisions(env,{now:now+900000,evaluate})).status,'deferred');
+  assert.equal((await collectCampaignDecisions(env,{now:now+600000,evaluate:failure})).status,'deferred');
+  assert.deepEqual(await collectCampaignDecisions(env,{now:now+600000,evaluate:failure,newPosts:true}),
+    {status:'provider-error',providerStatus:429,saved:0});
+  assert.equal((await collectCampaignDecisions(env,{now:now+900000,evaluate,newPosts:true})).status,'deferred');
   assert.equal((await data(await call('/api/leaderboard?view=campaign'))).totals.posts,0);
   assert.deepEqual(await collectCampaignDecisions(env,{now:now+1200000,evaluate}),{status:'classified',saved:1});
   assert.deepEqual(evaluated,['111','111']);
+});
+
+test('campaign scheduler respects bans, individual exclusions and month exclusions', async context => {
+  const { db } = fixture(context);
+  const now = Date.parse('2026-11-19T12:00:00Z');
+  const stamp = '2026-11-19T10:00:00Z';
+  const add = db.prepare('INSERT INTO entropy_records (generation,kind,record_id,chunk_index,payload,created_at) VALUES (?,?,?,0,?,0)');
+  for (const [id, authorId] of [['101','11'],['102','12'],['103','13'],['104','14']]) {
+    add.run(generation,'post',id,JSON.stringify({id,authorId,publishedAt:stamp,date:'2026-11-19',isReply:false,body:'A post'}));
+  }
+  add.run(generation,'state:bans','11','{}');
+  add.run(generation,'state:postExclusions','102','{}');
+  add.run(generation,'state:periodDecisions','2026-11|13','{}');
+  const evaluated = [];
+  const evaluate = async post => {
+    evaluated.push(post.id);
+    return { status: 'match', choice: 'match', confidence: 0.93, model: 'fixture-jev' };
+  };
+  assert.deepEqual(await collectCampaignDecisions({DB:localD1Binding(db),TYPESAFE_API_KEY:'fixture'},{now,evaluate}),
+    {status:'classified',saved:1});
+  assert.deepEqual(evaluated,['104']);
 });
 
 test('the shared campaign client uses the Workers-compatible redirect mode', async () => {

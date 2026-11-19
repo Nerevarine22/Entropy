@@ -209,11 +209,13 @@ async function readProfilePage(db, id, postIds) {
 
 export default {
   async scheduled(_controller, env) {
+    let newPosts = false;
     try {
       const result = await collectLeaderboardPage(env);
+      newPosts = result.addedPosts > 0;
       if (result.status !== 'idle') console.log('Leaderboard ingestion', result);
     } finally {
-      const jobs = await Promise.allSettled([collectSmartFollowers(env), collectCampaignDecisions(env)]);
+      const jobs = await Promise.allSettled([collectSmartFollowers(env), collectCampaignDecisions(env, { newPosts })]);
       const names = ['Smart Followers collection', 'Campaign collection'];
       jobs.forEach((job, index) => {
         if (job.status === 'rejected') console.error(names[index], 'failed');
