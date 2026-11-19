@@ -1,5 +1,6 @@
 import Model from '../entropy-app/model.js';
 
+export const EARLY_CREATOR_PERIOD = Model.EARLY_CREATOR_PERIOD;
 export const POST_PAGE_SIZE = 10;
 const CREATOR_PAGE_SIZE = 20;
 

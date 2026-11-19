@@ -1,4 +1,4 @@
-import { creatorSummary, POST_PAGE_SIZE, rankPage, requestedPage, summarize } from './leaderboard-view.mjs';
+import { creatorSummary, EARLY_CREATOR_PERIOD, POST_PAGE_SIZE, rankPage, requestedPage, summarize } from './leaderboard-view.mjs';
 import { handleAdmin } from './admin-worker.mjs';
 import { currentControl, rankingReviews, storedRecords } from './moderation-store.mjs';
 
@@ -101,7 +101,8 @@ async function readDataset(db, includeText, generation, includeExcluded = false)
 
 async function rankingSnapshot(env, url, control) {
   const cache = env.previewCache ?? globalThis.caches?.default;
-  const key = `${url.origin}/__entropy_cache/v3/${control.generation}/${control.revision}/ranking`;
+  const { start, endExclusive } = EARLY_CREATOR_PERIOD;
+  const key = `${url.origin}/__entropy_cache/v3/${control.generation}/${control.revision}/ranking/${start}/${endExclusive}`;
   return cached(cache, key, async () => {
     const [dataset, reviews] = await Promise.all([
       readDataset(env.DB, false, control.generation, true), rankingReviews(env.DB, control.generation),

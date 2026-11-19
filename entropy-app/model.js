@@ -5,7 +5,7 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function (Scoring) {
   'use strict';
   const METRICS = ['impressions', 'likes', 'reposts', 'uiReposts', 'quotes', 'replies', 'bookmarks'];
-  const EARLY_CREATOR_PERIOD = Object.freeze({ start: '2026-08-24', endExclusive: '2026-09-24' });
+  const EARLY_CREATOR_PERIOD = Object.freeze({ start: '2026-08-24', endExclusive: '2026-10-16' });
   function isEarlyCreatorPost(post) {
     return post.isReply === false && typeof post.date === 'string'
       && post.date >= EARLY_CREATOR_PERIOD.start && post.date < EARLY_CREATOR_PERIOD.endExclusive;
