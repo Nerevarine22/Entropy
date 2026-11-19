@@ -20,7 +20,7 @@ function observation(post, field, fallback) {
   return timestamp(post.metricsObservedAt?.[field]) || timestamp(post.metricsAsOf) || timestamp(fallback);
 }
 
-function mergePost(previous, incoming, oldAsOf, newAsOf) {
+export function mergePost(previous, incoming, oldAsOf, newAsOf) {
   if (!previous) {
     const metricsObservedAt = {};
     for (const key of METRICS) if (known(incoming.metrics[key])) metricsObservedAt[key] = observation(incoming, key, newAsOf);

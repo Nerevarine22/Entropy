@@ -1,5 +1,6 @@
 import { advanceHourlyDiscovery, classifySyncError } from '../entropy-app/live-engine.mjs';
 import { createClient } from '../entropy-app/twitterapi.mjs';
+import { METRIC_BATCH_SIZE, METRIC_INTERVAL, observePostMetrics, selectMetricPosts } from './leaderboard-metrics.mjs';
 
 const STREAMS = [
   ['mentions', '@entropyIO'],
@@ -8,9 +9,11 @@ const STREAMS = [
   ['keyword-quotes', 'entropyIO filter:quote'],
 ];
 const EMPTY = { meta: {}, authors: [], posts: [] };
-const DAILY_LIMIT = 144;
+const DAILY_LIMIT = 168;
 const CATCHUP_LIMIT = 48;
-const MONTHLY_UNITS = 20000;
+const MONTHLY_UNITS = 66666;
+const MONTHLY_METRIC_UNITS = 30000;
+const DAILY_METRIC_UNITS = 480;
 const PAGE_RESERVE = 100;
 const LEASE_MS = 90000;
 const DAY = 86400000;
@@ -29,6 +32,8 @@ function budgetFor(state, at) {
   const month = at.slice(0, 7), day = at.slice(0, 10);
   const previous = state.budget;
   return { month, day, units: previous?.month === month ? previous.units : 0,
+    metricUnits: previous?.month === month ? (previous.metricUnits ?? 0) : 0,
+    dailyMetricUnits: previous?.day === day ? (previous.dailyMetricUnits ?? 0) : 0,
     catchupAttempts: previous?.day === day ? previous.catchupAttempts : 0 };
 }
 
@@ -36,19 +41,26 @@ function due(value, now) {
   return !value || Date.parse(value) <= now;
 }
 
-function nextStep(state, now, budget) {
-  for (const lane of ['latest', 'catchup']) {
-    for (let offset = 0; offset < STREAMS.length; offset++) {
-      const index = (state.next + offset) % STREAMS.length;
-      const [key, term] = STREAMS[index];
-      const sync = state.streams[key], hourly = sync?.hourly;
-      if (sync?.paused) continue;
-      const ready = lane === 'latest' ? due(hourly?.nextRunAt || sync?.nextRunAt, now)
-        : budget.catchupAttempts < CATCHUP_LIMIT && hourly?.pendingWindows?.length && due(hourly.nextAttemptAt, now);
-      if (ready) return { index, key, term, lane, sync };
-    }
+function discoveryStep(state, now, budget, lane) {
+  for (let offset = 0; offset < STREAMS.length; offset++) {
+    const index = (state.next + offset) % STREAMS.length;
+    const [key, term] = STREAMS[index];
+    const sync = state.streams[key], hourly = sync?.hourly;
+    if (sync?.paused) continue;
+    const ready = lane === 'latest' ? due(hourly?.nextRunAt || sync?.nextRunAt, now)
+      : budget.catchupAttempts < CATCHUP_LIMIT && hourly?.pendingWindows?.length && due(hourly.nextAttemptAt, now);
+    if (ready) return { index, key, term, lane, sync };
   }
   return null;
+}
+
+function nextStep(state, now, budget) {
+  const latest = discoveryStep(state, now, budget, 'latest');
+  if (latest) return latest;
+  const limit = Math.min(METRIC_BATCH_SIZE, DAILY_METRIC_UNITS - budget.dailyMetricUnits,
+    MONTHLY_METRIC_UNITS - budget.metricUnits, MONTHLY_UNITS - budget.units - PAGE_RESERVE);
+  if (limit > 0 && due(state.metrics?.nextAttemptAt, now)) return { lane: 'metrics', key: 'metrics', limit };
+  return discoveryStep(state, now, budget, 'catchup');
 }
 
 function retainCoverage(hourly) {
@@ -109,6 +121,51 @@ function recordWrites(db, generation, incoming, args, now) {
   return statements;
 }
 
+async function scanDiscovery(db, state, step, api, control, args, now, startingAt) {
+  const { key, term, lane, sync } = step;
+  let units = 0;
+  const result = await advanceHourlyDiscovery({
+    dataset: EMPTY,
+    sync: sync ?? { enabled: true, discovery: { recentThrough: iso(startingAt) } },
+  }, { now, lane, client: { async searchPage({ query, cursor }) {
+    units = PAGE_RESERVE;
+    const page = await api.searchPage({ query: query.replace(/^@entropyIO\b/, term), cursor });
+    units = Math.max(1, page.tweets.length);
+    return page;
+  } } });
+  const hourly = result.sync.hourly;
+  retainCoverage(hourly);
+  state.streams[key] = result.sync;
+  const incoming = await newRecords(db, control.generation, result.dataset);
+  const error = lane === 'latest' ? hourly.lastError : hourly.catchupLastError;
+  state.addedPosts += incoming.posts.length;
+  return { units, changed: incoming.posts.length, writes: recordWrites(db, control.generation, incoming, args, now),
+    report: { status: error ? 'provider-error' : hourly.lastWindow?.status || 'idle', addedPosts: incoming.posts.length,
+      ...(error ? { diagnostic: error.diagnosticCode || classifySyncError(error).diagnosticCode } : {}) } };
+}
+
+async function refreshMetrics(db, state, api, posts, generation, args, now) {
+  const at = iso(now);
+  const result = await observePostMetrics(api, posts, at);
+  const previous = state.metrics || {};
+  state.metrics = { ...previous, nextAttemptAt: iso(now + METRIC_INTERVAL), lastAttemptAt: at,
+    lastSuccessAt: result.diagnostic ? previous.lastSuccessAt || null : at,
+    batches: (previous.batches || 0) + 1, checkedPosts: (previous.checkedPosts || 0) + result.available,
+    changedPosts: (previous.changedPosts || 0) + result.changed,
+    lastBatchSize: posts.length, lastBatchChanged: result.changed, lastError: result.diagnostic || null };
+  const writes = result.updated.map(post => db.prepare(`UPDATE entropy_records SET payload=?
+    WHERE generation=? AND kind='post' AND record_id=? AND chunk_index=0 AND ${held}`)
+    .bind(JSON.stringify(post), generation, post.id, ...args));
+  if (result.changed) writes.push(db.prepare(`UPDATE entropy_records SET payload=json_set(payload,
+    '$.asOf',max(coalesce(json_extract(payload,'$.asOf'),?),?))
+    WHERE generation=? AND kind='dataset-meta' AND record_id='main' AND chunk_index=0 AND ${held}`)
+    .bind(at, at, generation, ...args));
+  return { units: result.units, changed: result.changed, writes, report: {
+    status: result.diagnostic ? 'provider-error' : 'metrics-updated', checkedPosts: result.available,
+    changedPosts: result.changed, ...(result.diagnostic ? { diagnostic: result.diagnostic } : {}),
+  } };
+}
+
 export async function collectLeaderboardPage(env, { now = Date.now(), client } = {}) {
   const key = env.TWITTERAPI_IO_KEY?.trim();
   const startingAt = Date.parse(env.ENTROPY_SCAN_START_UTC);
@@ -135,14 +192,30 @@ export async function collectLeaderboardPage(env, { now = Date.now(), client } =
     state = await loadState(db);
     budget = budgetFor(state, at);
     if (budget.units + PAGE_RESERVE > MONTHLY_UNITS) return { status: 'monthly-budget' };
-    const step = nextStep(state, now, budget);
+    let step = nextStep(state, now, budget);
     if (!step) return { status: 'idle' };
-    const { index, key: stream, term, lane, sync } = step;
+    let posts;
+    if (step.lane === 'metrics') {
+      posts = await selectMetricPosts(db, control.generation, now, step.limit, (state.metrics?.batches ?? 0) % 2 === 0);
+      if (!posts.length) {
+        state.metrics = { ...state.metrics, nextAttemptAt: iso(now + METRIC_INTERVAL) };
+        step = discoveryStep(state, now, budget, 'catchup');
+        if (!step) {
+          await checkpointWrite(db, state, guardArgs).run();
+          return { status: 'idle' };
+        }
+      }
+    }
+    const { index, key: stream, lane } = step;
+    const metrics = lane === 'metrics';
+    const reserved = metrics ? posts.length : PAGE_RESERVE;
 
     // Reserve the largest expected response before sending a paid request.
     // If an execution is interrupted, the reservation remains charged.
-    state.next = (index + 1) % STREAMS.length;
-    state.budget = { ...budget, units: budget.units + PAGE_RESERVE,
+    if (!metrics) state.next = (index + 1) % STREAMS.length;
+    state.budget = { ...budget, units: budget.units + reserved,
+      metricUnits: budget.metricUnits + (metrics ? reserved : 0),
+      dailyMetricUnits: budget.dailyMetricUnits + (metrics ? reserved : 0),
       catchupAttempts: budget.catchupAttempts + Number(lane === 'catchup') };
     state.lastResult = { at, stream, lane, status: 'attempted' };
     const reserve = db.prepare(`UPDATE entropy_control
@@ -151,36 +224,19 @@ export async function collectLeaderboardPage(env, { now = Date.now(), client } =
     const reservation = await db.batch([checkpointWrite(db, state, guardArgs), reserve]);
     if (reservation.some(result => result.meta.changes !== 1)) throw new Error('Could not reserve a collector attempt.');
 
-    const api = client ?? createClient({ apiKey: key, timeoutMs: 15000 });
-    let units = 0;
-    const result = await advanceHourlyDiscovery({
-      dataset: EMPTY,
-      sync: sync ?? { enabled: true, discovery: { recentThrough: iso(startingAt) } },
-    }, {
-      now, lane,
-      client: { async searchPage({ query, cursor }) {
-        units = PAGE_RESERVE;
-        const page = await api.searchPage({ query: query.replace(/^@entropyIO\b/, term), cursor });
-        units = Math.max(1, page.tweets.length);
-        return page;
-      } },
-    });
-    const hourly = result.sync.hourly;
-    retainCoverage(hourly);
-    state.streams[stream] = result.sync;
-    state.budget.units = budget.units + units;
-    const incoming = await newRecords(db, control.generation, result.dataset);
-    const error = lane === 'latest' ? hourly.lastError : hourly.catchupLastError;
-    const recovered = hourly.lastWindow?.status;
-    state.addedPosts += incoming.posts.length;
-    state.lastResult = { at, stream, lane, status: error ? 'provider-error' : recovered || 'idle',
-      addedPosts: incoming.posts.length, ...(error ? { diagnostic: error.diagnosticCode || classifySyncError(error).diagnosticCode } : {}) };
-
-    const writes = recordWrites(db, control.generation, incoming, guardArgs, now);
+    const api = client ?? createClient({ apiKey: key, timeoutMs: metrics ? 35000 : 15000 });
+    const result = metrics ? await refreshMetrics(db, state, api, posts, control.generation, guardArgs, now)
+      : await scanDiscovery(db, state, step, api, control, guardArgs, now, startingAt);
+    state.budget.units = budget.units + result.units;
+    if (metrics) {
+      state.budget.metricUnits = budget.metricUnits + result.units;
+      state.budget.dailyMetricUnits = budget.dailyMetricUnits + result.units;
+    }
+    state.lastResult = { at, stream, lane, ...result.report };
     const finish = db.prepare(`UPDATE entropy_control SET lease_token=NULL,lease_until=0,
       revision=revision+?,updated_at=CASE WHEN ? > 0 THEN ? ELSE updated_at END WHERE ${guarded}`)
-      .bind(Number(incoming.posts.length > 0), incoming.posts.length, at, ...guardArgs);
-    const saved = await db.batch([...writes, checkpointWrite(db, state, guardArgs), finish]);
+      .bind(Number(result.changed > 0), result.changed, at, ...guardArgs);
+    const saved = await db.batch([...result.writes, checkpointWrite(db, state, guardArgs), finish]);
     if (saved.at(-1)?.meta.changes !== 1) throw new Error('The collector could not publish the saved page.');
     released = true;
     return state.lastResult;

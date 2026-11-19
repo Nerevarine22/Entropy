@@ -118,11 +118,59 @@ test('overlapping triggers reserve a single paid page and leave the provider fai
 test('daily and monthly budget limits prevent requests before querying the provider', async context => {
   const f = fixture(context);
   const client = { async searchPage() { assert.fail('Budget should prevent a provider call.'); } };
-  f.db.exec("UPDATE entropy_control SET daily_date='2026-11-19',daily_attempts=144 WHERE id='main'");
+  f.db.exec("UPDATE entropy_control SET daily_date='2026-11-19',daily_attempts=168 WHERE id='main'");
   assert.equal((await f.run(5, client)).status, 'daily-budget');
   f.db.exec("UPDATE entropy_control SET daily_attempts=0 WHERE id='main'");
   f.db.prepare("INSERT INTO entropy_leaderboard_ingestion VALUES ('main',?)").run(JSON.stringify({
-    version: 1, next: 0, streams: {}, budget: { day: '2026-11-19', month: '2026-11', units: 19950, catchupAttempts: 0 },
+    version: 1, next: 0, streams: {}, budget: { day: '2026-11-19', month: '2026-11', units: 66600, catchupAttempts: 0 },
   }));
   assert.equal((await f.run(5, client)).status, 'monthly-budget');
+});
+
+test('the old-post batch refreshes the ranking after discovery and preserves text, moderation, and missing counts', async context => {
+  const f = fixture(context);
+  const publishedAt = '2026-10-10T09:00:00.000Z';
+  const old = id => ({ id, authorId: '11', date: '2026-10-10', publishedAt, isReply: false,
+    body: 'Archived @entropyIO post', metricsAsOf: '2026-11-18T16:00:00.000Z',
+    metrics: { impressions: 50, likes: 10, reposts: 0, quotes: 0, replies: 1 } });
+  f.add('post','201',old('201'));
+  f.add('post','202',old('202'));
+  f.add('post','203',old('203'));
+  f.add('state:postExclusions','202',{authorId:'11',reason:'Archived decision',at:asOf});
+  const before = await f.ranking();
+  assert.equal(before.totals.views, 170);
+  const calls = [];
+  const client = {
+    async searchPage() { calls.push('discovery'); return page(); },
+    async tweetsByIds(ids) {
+      calls.push(ids);
+      return { tweets: [tweet('201',0,{createdAt:new Date(publishedAt).toUTCString(), text:'Different provider text',
+        viewCount:125, likeCount:null, retweetCount:2, quoteCount:1})], unavailableEntries: 0 };
+    },
+  };
+  for (const minute of [5,10,15,20]) assert.equal((await f.run(minute,client)).lane,'latest');
+  const outcome=await f.run(25,client);
+  assert.equal(outcome.status,'metrics-updated');
+  assert.equal(outcome.checkedPosts,1);
+  assert.equal(outcome.changedPosts,1);
+  assert.deepEqual(calls,['discovery','discovery','discovery','discovery',['201','203']]);
+  const updated=f.payload('post','201');
+  assert.equal(updated.metrics.likes,10);
+  assert.equal(updated.metrics.impressions,125);
+  assert.equal(updated.body,'Archived @entropyIO post');
+  assert(f.payload('post','203').availability.status==='unavailable');
+  assert.equal(f.payload('post','203').metrics.impressions,50);
+  assert.equal(f.payload('post','202').leaderboardMetricsCheckedAt,undefined);
+  assert.equal(f.revision(),2);
+  const after=await f.ranking();
+  assert.equal(after.totals.views,245);
+  assert.notEqual(before.rows[0].engagement,after.rows[0].engagement);
+  assert.equal(f.state().budget.metricUnits,1);
+  assert.equal((await f.run(30,client)).status,'idle');
+  const current=f.state();
+  current.metrics.nextAttemptAt=null;
+  current.budget.metricUnits=30000;
+  f.db.prepare("UPDATE entropy_leaderboard_ingestion SET payload=? WHERE id='main'").run(JSON.stringify(current));
+  assert.equal((await f.run(35,client)).status,'idle');
+  assert.equal(calls.length,5);
 });
