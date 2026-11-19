@@ -1,5 +1,6 @@
 import { creatorSummary, EARLY_CREATOR_PERIOD, POST_PAGE_SIZE, rankPage, requestedPage, summarize } from './leaderboard-view.mjs';
 import { handleAdmin } from './admin-worker.mjs';
+import { collectLeaderboardPage } from './leaderboard-ingestion.mjs';
 import { currentControl, rankingReviews, storedRecords } from './moderation-store.mjs';
 
 const METRICS = ['impressions', 'likes', 'reposts', 'quotes', 'replies'];
@@ -165,6 +166,11 @@ async function readProfilePage(db, id, postIds) {
 }
 
 export default {
+  async scheduled(_controller, env) {
+    const result = await collectLeaderboardPage(env);
+    if (result.status !== 'idle') console.log('Leaderboard ingestion', result);
+  },
+
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname === '/api/admin') return handleAdmin(request, env, target => adminRanking(env, target));

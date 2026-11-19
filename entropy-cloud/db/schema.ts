@@ -45,3 +45,8 @@ export const entropyModerationLog = sqliteTable('entropy_moderation_log', {
   actorId: text('actor_id').notNull(),
   createdAt: text('created_at').notNull(),
 }, table => [index('entropy_moderation_log_author_idx').on(table.authorId, table.createdAt)]);
+
+export const entropyLeaderboardIngestion = sqliteTable('entropy_leaderboard_ingestion', {
+  id: text('id').primaryKey(),
+  payload: text('payload').notNull(),
+});

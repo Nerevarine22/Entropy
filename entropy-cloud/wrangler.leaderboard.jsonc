@@ -3,6 +3,8 @@
   "main": "leaderboard-worker.mjs",
   "compatibility_date": "2026-11-18",
   "workers_dev": true,
+  "triggers": { "crons": ["*/5 * * * *"] },
+  "vars": { "ENTROPY_SCAN_START_UTC": "2026-11-18T15:58:08.000Z" },
   "d1_databases": [
     {
       "binding": "DB",
