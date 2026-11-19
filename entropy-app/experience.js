@@ -27,7 +27,7 @@
   let boardRequest, searchTimer;
   let loadedBoard = false;
   let adminSignedIn = false;
-  const earlyBadge = '<span class="early-badge" title="Posted about Entropy before October 16, 2026 (UTC)">Early</span>';
+  const earlyBadge = '<span class="early-badge" title="Posted about Entropy through October 16, 2026 (UTC)">Early</span>';
   const reviewDate = value => value ? new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }).format(new Date(value)) : '';
 
   function reviewBadge(review) {
