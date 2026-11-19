@@ -1,4 +1,5 @@
-import { integer, primaryKey, sqliteTable, text, index } from 'drizzle-orm/sqlite-core';
+import { sql } from 'drizzle-orm';
+import { check, integer, primaryKey, real, sqliteTable, text, index } from 'drizzle-orm/sqlite-core';
 
 // A generation is published only by a successful revision compare-and-swap.
 // Leases and usage reservations live outside browser-editable snapshot data.
@@ -49,4 +50,42 @@ export const entropyModerationLog = sqliteTable('entropy_moderation_log', {
 export const entropyLeaderboardIngestion = sqliteTable('entropy_leaderboard_ingestion', {
   id: text('id').primaryKey(),
   payload: text('payload').notNull(),
+});
+
+export const entropyCampaignWeeks = sqliteTable('entropy_campaign_weeks', {
+  id: text('id').primaryKey(),
+  label: text('label').notNull(),
+  topic: text('topic').notNull(),
+  startsAt: text('starts_at').notNull(),
+  endsAt: text('ends_at').notNull(),
+  rubricId: text('rubric_id').notNull(),
+});
+
+export const entropyCampaignDecisions = sqliteTable('entropy_campaign_decisions', {
+  weekId: text('week_id').notNull(),
+  rubricId: text('rubric_id').notNull(),
+  postId: text('post_id').notNull(),
+  postBody: text('post_body').notNull(),
+  modelStatus: text('model_status').notNull(),
+  modelChoice: text('model_choice'),
+  confidence: real('confidence'),
+  model: text('model'),
+  manualStatus: text('manual_status'),
+  reviewedAt: text('reviewed_at'),
+  reviewedBy: text('reviewed_by'),
+  revision: integer('revision').notNull().default(0),
+}, table => [
+  primaryKey({ columns: [table.weekId, table.rubricId, table.postId] }),
+  check('campaign_model_status', sql`${table.modelStatus} IN ('match','review','off_topic')`),
+  check('campaign_model_choice', sql`${table.modelChoice} IN ('match','review','off_topic')`),
+  check('campaign_manual_status', sql`${table.manualStatus} IN ('match','review','off_topic')`),
+]);
+
+export const entropyCampaignCollection = sqliteTable('entropy_campaign_collection', {
+  id: text('id').primaryKey(),
+  leaseToken: text('lease_token'),
+  leaseUntil: integer('lease_until').notNull().default(0),
+  nextAttemptAt: integer('next_attempt_at').notNull().default(0),
+  lastStatus: text('last_status'),
+  lastAttemptAt: integer('last_attempt_at'),
 });

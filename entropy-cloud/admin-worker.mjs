@@ -1,5 +1,6 @@
 import { adminActor, adminSession, configuredAdmin, sessionCookie, verifyAdminKey } from './admin-auth.mjs';
 import { adminProfile, moderate, ModerationError } from './moderation-store.mjs';
+import { reviewCampaignPost } from './campaign-store.mjs';
 
 const headers = { 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' };
 const json = (body, status = 200, cookie) => Response.json(body, {
@@ -31,7 +32,7 @@ async function readInput(request) {
   return value;
 }
 
-export async function handleAdmin(request, env, loadRanking) {
+export async function handleAdmin(request, env, loadRanking, loadCampaignReview) {
   const url = new URL(request.url);
   try {
     if (!configuredAdmin(env)) throw new ModerationError(503, 'Admin sign-in is not configured.');
@@ -41,6 +42,7 @@ export async function handleAdmin(request, env, loadRanking) {
       if (url.searchParams.get('view') === 'session') return json({ authenticated });
       if (!authenticated) throw new ModerationError(401, 'Sign in to open moderation.');
       if (url.searchParams.get('view') === 'ranking') return json(await loadRanking(url));
+      if (url.searchParams.get('view') === 'weekly') return json(await loadCampaignReview(url));
       if (url.searchParams.get('view') === 'profile') {
         return json(await adminProfile(env.DB, url.searchParams.get('creator'), url.searchParams.get('page')));
       }
@@ -55,7 +57,8 @@ export async function handleAdmin(request, env, loadRanking) {
     }
     if (!authenticated) throw new ModerationError(401, 'Sign in to open moderation.');
     if (input.action === 'logout') return json({ authenticated: false }, 200, await sessionCookie(url));
-    await moderate(env.DB, input, adminActor(env));
+    if (input.action === 'campaign-review') await reviewCampaignPost(env.DB, input, adminActor(env));
+    else await moderate(env.DB, input, adminActor(env));
     return json({ saved: true });
   } catch (error) {
     if (error instanceof ModerationError) return json({ error: error.message }, error.status);

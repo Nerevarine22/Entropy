@@ -292,6 +292,15 @@
 .moderation-form form { margin-top: 8px; }
 .moderation-form textarea { display: block; margin-top: 4px; resize: vertical; }
 
+.campaign-intro .section-meta { display: block; margin-top: 10px; }
+.campaign-filter { display: grid; gap: 5px; min-width: 128px; }
+.campaign-filter > span { color: #a6aaa8; font-size: 12px; }
+.campaign-review { max-width: 960px; margin: clamp(32px, 6vw, 74px) auto; }
+.campaign-review .section-top { flex-wrap: wrap; }
+.campaign-review .profile-posts { margin: 12px 0; }
+.campaign-review .campaign-post-body { white-space: pre-wrap; overflow-wrap: anywhere; }
+.campaign-actions { margin-top: 12px; }
+
 @media (max-width: 700px) {
   .board-controls { flex-wrap: wrap; width: 100%; }
   .admin-mode .brand { margin-right: 0; }

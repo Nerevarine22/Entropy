@@ -3,6 +3,8 @@ import { readFile } from 'node:fs/promises';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import { creatorScore } from '../leaderboard-view.mjs';
+import { collectCampaignDecisions } from '../campaign-ingestion.mjs';
+import { CampaignModelError, classifyCampaignPost } from '../campaign-model.mjs';
 import worker from '../leaderboard-worker.mjs';
 import { localD1Binding } from '../../entropy-app/local-d1.mjs';
 
@@ -12,7 +14,7 @@ const generation = 'leaderboard-test';
 const date = '2026-09-01';
 const asOf = date + 'T12:00:00.000Z';
 const reason = 'Internal moderation example';
-const migrations = await Promise.all(['0000_aberrant_gamora.sql', '0001_creator_moderation.sql']
+const migrations = await Promise.all(['0000_aberrant_gamora.sql', '0001_creator_moderation.sql', '0003_campaign_weeks.sql', '0004_campaign_collection.sql']
   .map(name => readFile(new URL('../drizzle/' + name, import.meta.url), 'utf8')));
 
 function fixture(context) {
@@ -103,6 +105,82 @@ test('public and admin ranking order by score while the map orders by views', as
   assert.equal(admin.rows[0].author.followers, undefined);
   const legacy = await data(await call('/api/leaderboard'));
   assert(legacy.authors.every(author => !Object.hasOwn(author, 'followers')));
+});
+
+test('weekly reviews change only the selected campaign and edited posts require classification again', async context => {
+  const { call, login, db, savePost } = fixture(context);
+  savePost('112','11','Another qualifying post', 35);
+  const addWeek = db.prepare('INSERT INTO entropy_campaign_weeks VALUES (?,?,?,?,?,?)');
+  addWeek.run('week-1','Week 1','Role guides','2026-09-01T00:00:00Z','2026-09-07T00:00:00Z','rules-1');
+  addWeek.run('week-2','Week 2','Another topic','2026-09-07T00:00:00Z','2026-09-14T00:00:00Z','rules-2');
+  const add = db.prepare(`INSERT INTO entropy_campaign_decisions
+    (week_id,rubric_id,post_id,post_body,model_status) VALUES ('week-1','rules-1',?,?,?)`);
+  add.run('111','Original @entropyIO post','match');
+  add.run('112','Another qualifying post','match');
+  add.run('222','Another @entropyIO post','review');
+  const weekly = () => call('/api/leaderboard?view=campaign&week=week-1').then(data);
+  let result = await weekly();
+  assert.deepEqual(result.weeks.map(week => week.id), ['week-2','week-1']);
+  assert.equal(result.totals.posts, 2);
+  assert.equal(result.rows[0].postCount, 2);
+  assert.equal(result.rows[0].score, creatorScore({ views: 155, likes: 4, reposts: 2, quotes: 0, postCount: 2 }));
+  const profile = await data(await call('/api/leaderboard?view=profile&week=week-1&creator=11'));
+  assert.deepEqual(new Set(profile.posts.map(post => post.id)), new Set(['111','112']));
+  assert.equal((await call('/api/leaderboard?view=profile&week=week-1&creator=22')).status,404);
+  assert.equal((await call('/api/admin?view=weekly&week=week-1')).status,401);
+
+  await login();
+  const queue = await data(await call('/api/admin?view=weekly&week=week-1'));
+  assert.deepEqual(queue.counts,{match:2,review:1,off_topic:0});
+  assert.equal(queue.posts[0].post.id,'222');
+  const action = {action:'campaign-review',week:'week-1',postId:'222',status:'match',revision:queue.posts[0].revision};
+  await data(await call('/api/admin',{action}));
+  assert.equal((await call('/api/admin',{action})).status,409);
+  assert.equal((await weekly()).totals.posts,3);
+  assert.equal((await data(await call('/api/leaderboard?view=campaign&week=week-2'))).totals.posts,0);
+  assert.equal((await data(await call('/api/leaderboard?view=ranking'))).totals.posts,3);
+
+  savePost('222','22','Edited after review',80);
+  assert.equal((await weekly()).totals.posts,2);
+  assert.equal((await data(await call('/api/leaderboard?view=ranking'))).totals.posts,3);
+});
+
+test('campaign scheduler classifies new text, preserves decisions for metrics updates, and retries failed work', async context => {
+  const { db, call } = fixture(context);
+  const env = { DB: localD1Binding(db), TYPESAFE_API_KEY: 'fixture' };
+  const now = Date.parse('2026-11-19T12:00:00Z');
+  db.exec(`UPDATE entropy_records SET payload=json_set(payload,'$.publishedAt','2026-11-19T10:00:00Z','$.date','2026-11-19')
+    WHERE kind='post' AND record_id='111'`);
+  const evaluated = [];
+  const evaluate = async post => {
+    evaluated.push(post.id);
+    return { status: 'match', choice: 'match', confidence: 0.93, model: 'fixture-jev' };
+  };
+  assert.deepEqual(await collectCampaignDecisions(env,{now,evaluate}),{status:'classified',saved:1});
+  assert.deepEqual(evaluated,['111']);
+  assert.equal((await data(await call('/api/leaderboard?view=campaign'))).totals.posts,1);
+  db.exec(`UPDATE entropy_records SET payload=json_set(payload,'$.metrics.impressions',220)
+    WHERE kind='post' AND record_id='111'`);
+  assert.deepEqual(await collectCampaignDecisions(env,{now:now+300000,evaluate}),{status:'idle',saved:0});
+  assert.deepEqual(evaluated,['111']);
+  assert.equal((await data(await call('/api/leaderboard?view=campaign'))).totals.views,220);
+  db.exec(`UPDATE entropy_records SET payload=json_set(payload,'$.body','Changed body')
+    WHERE kind='post' AND record_id='111'`);
+  const failure = async () => { throw new CampaignModelError(429,600); };
+  assert.deepEqual(await collectCampaignDecisions(env,{now:now+600000,evaluate:failure}),{status:'provider-error',providerStatus:429,saved:0});
+  assert.equal((await collectCampaignDecisions(env,{now:now+900000,evaluate})).status,'deferred');
+  assert.equal((await data(await call('/api/leaderboard?view=campaign'))).totals.posts,0);
+  assert.deepEqual(await collectCampaignDecisions(env,{now:now+1200000,evaluate}),{status:'classified',saved:1});
+  assert.deepEqual(evaluated,['111','111']);
+});
+
+test('the shared campaign client uses the Workers-compatible redirect mode', async () => {
+  const rubric = { topic: 'Roles',rules:'Explain roles.',examples:[],reviewThreshold:0.8 };
+  const fetcher = async (url, options) => {
+    assert.equal(options.redirect,'manual');
+    return Response.json({ answers:{ topicFit:{type:'choice',choice:'match',confidence:.7,probabilities:{match:.8,review:.1,off_topic:.1}} }});
+  };
+  assert.equal((await classifyCampaignPost({body:'A role guide'},rubric,'test',fetcher)).status,'review');
 });
 
 test('admin authenticates before reading or changing moderation state', async context => {

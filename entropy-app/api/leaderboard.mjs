@@ -15,7 +15,7 @@ export default {
         return unavailable();
       }
       const requested = new URL(request.url).searchParams;
-      for (const [key, maxLength] of [['view', 8], ['creator', 24], ['page', 6], ['q', 81]]) {
+      for (const [key, maxLength] of [['view', 8], ['creator', 24], ['page', 6], ['q', 81], ['week', 40]]) {
         const value = requested.get(key);
         if (value !== null) url.searchParams.set(key, value.slice(0, maxLength));
       }

@@ -28,8 +28,22 @@
   let boardRequest, searchTimer;
   let loadedBoard = false;
   let adminSignedIn = false;
+  let boardMode = null;
   const earlyBadge = '<span class="early-badge" title="Posted about Entropy through November 16, 2026 (UTC)">Early</span>';
   const reviewDate = value => value ? new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }).format(new Date(value)) : '';
+
+  function displayWeeks(select, data) {
+    select.replaceChildren(...data.weeks.map(week => new Option(week.label, week.id)));
+    select.value = data.week?.id ?? '';
+    select.disabled = !data.weeks.length;
+  }
+
+  function showCampaignSummary(data) {
+    displayWeeks($('campaign-week'), data);
+    $('campaign-topic').textContent = data.week?.topic ?? 'Campaign weeks will appear here.';
+    $('campaign-dates').textContent = data.week
+      ? `${reviewDate(data.week.startsAt)} – ${reviewDate(new Date(Date.parse(data.week.endsAt) - 1))} · UTC` : '';
+  }
 
   function reviewBadge(review) {
     if (review?.status === 'reviewed') {
@@ -100,28 +114,37 @@
   }
 
   async function loadBoard(page, scrollToTable = false) {
+    if (!boardMode) return;
+    const campaign = boardMode === 'campaign';
+    const week = campaign ? $('campaign-week').value : '';
     boardRequest?.abort();
     const request = new AbortController();
     boardRequest = request;
     $('leaderboard-body').setAttribute('aria-busy', 'true');
-    if (!loadedBoard) $('load-status').textContent = 'Loading leaderboard…';
+    if (!loadedBoard) {
+      $('load-status').hidden = false;
+      $('load-status').textContent = 'Loading leaderboard…';
+    }
     const q = $('search').value.trim();
     try {
       const status = admin ? $('review-filter').value : '';
-      const data = await getData({ view: 'ranking', page, ...(q ? { q } : {}), ...(status ? { status } : {}) }, request.signal);
+      const data = await getData({ view: campaign ? 'campaign' : 'ranking', page,
+        ...(week ? { week } : {}), ...(q ? { q } : {}), ...(status ? { status } : {}) }, request.signal);
       if (request.signal.aborted) return;
+      if (campaign) showCampaignSummary(data);
       const mapChanged = !loadedBoard || JSON.stringify(leaders) !== JSON.stringify(data.leaders);
       leaders = data.leaders;
       $('creator-total').textContent = format(data.totals.creators);
       $('post-total').textContent = format(data.totals.posts);
       $('view-total').textContent = compact(data.totals.views);
-      if (data.asOf) $('updated').textContent = 'UPDATED ' + new Intl.DateTimeFormat('en-US', {
+      $('updated').textContent = data.asOf ? 'UPDATED ' + new Intl.DateTimeFormat('en-US', {
         month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC',
-      }).format(new Date(data.asOf)).toUpperCase();
+      }).format(new Date(data.asOf)).toUpperCase() : '—';
+      $('empty').textContent = campaign && !q ? 'No qualifying posts for this week yet.' : 'No creators found. Try another handle.';
       buildTable(data);
       loadedBoard = true;
       $('load-status').hidden = true;
-      if (mapChanged && !$('page-leaderboard').hidden) buildMap();
+      if (!campaign && mapChanged && !$('page-leaderboard').hidden) buildMap();
       if (scrollToTable && !$('page-leaderboard').hidden) {
         const heading = $('board-heading');
         heading.focus({ preventScroll: true });
@@ -192,6 +215,7 @@
 
   let profileRequest;
   let profileId;
+  let profileWeek;
   let nextPostPage = 1;
   let profileSnapshot;
   let moderationBusy = false;
@@ -239,7 +263,8 @@
     status.textContent = 'Loading posts…';
     more.hidden = true;
     try {
-      const result = await getData({ view: 'profile', creator: profileId, page }, request.signal);
+      const result = await getData({ view: 'profile', creator: profileId, page,
+        ...(profileWeek ? { week: profileWeek } : {}) }, request.signal);
       if (request.signal.aborted) return;
       const container = $('profile-posts');
       if (admin) {
@@ -285,7 +310,7 @@
         <div><div class="creator-name-line"><h2 id="dialog-name">${esc(name)}</h2>${row.early ? earlyBadge : ''}</div><a href="https://x.com/${encodeURIComponent(row.author.handle)}" target="_blank" rel="noopener noreferrer">@${esc(row.author.handle)} ↗</a></div>
       </div>
       <div class="profile-stats">
-        <div><span>${admin ? 'COUNTED POSTS' : 'INDEXED POSTS'}</span><strong id="profile-counted-posts">${format(row.postCount)}</strong></div>
+        <div><span>${admin ? 'COUNTED POSTS' : boardMode === 'campaign' ? 'QUALIFYING POSTS' : 'INDEXED POSTS'}</span><strong id="profile-counted-posts">${format(row.postCount)}</strong></div>
         <div><span>TOTAL VIEWS</span><strong id="profile-views">${format(row.views)}</strong></div>
         <div><span>TOTAL LIKES</span><strong id="profile-likes">${format(row.likes)}</strong></div>
       </div>
@@ -293,27 +318,114 @@
         <form data-action="review"><button id="mark-reviewed" class="admin-button admin-button-primary" type="submit" disabled>Mark reviewed</button></form>
         <p id="moderation-feedback" role="status"></p></div>
         <details id="moderation-history" class="moderation-history" hidden><summary>Moderation history</summary><ul id="moderation-events"></ul></details>` : ''}
-      <h3 class="profile-posts-title">Indexed posts</h3>
+      <h3 class="profile-posts-title">${boardMode === 'campaign' ? 'Qualifying posts' : 'Indexed posts'}</h3>
       <div id="profile-posts" class="profile-posts"></div>
       <p id="profile-post-status" class="board-footer" role="status"></p>
       <button id="profile-post-more" class="post-toggle" type="button" hidden>Load more posts</button>`;
     profileId = id;
+    profileWeek = boardMode === 'campaign' ? $('campaign-week').value : null;
     profileSnapshot = null;
     nextPostPage = 1;
     dialog.showModal();
     dialog.scrollTop = 0;
     loadPosts();
   }
+  function resetBoard() {
+    boardRequest?.abort();
+    loadedBoard = false;
+    rows = [];
+    leaders = [];
+    $('leaderboard-body').replaceChildren();
+    $('empty').hidden = true;
+    $('board-count').textContent = '';
+    $('board-pagination').hidden = true;
+    for (const id of ['creator-total', 'post-total', 'view-total', 'updated']) $(id).textContent = '—';
+  }
+
+  let weeklyRequest, weeklyBusy = false, weeklyPage = 1;
+  const weeklyStatusNames = { match: 'Included', review: 'Needs review', off_topic: 'Excluded' };
+
+  function weeklyCard(entry) {
+    const { post, handle, status, choice, confidence, manualStatus, revision } = entry;
+    const choices = ['match', 'off_topic', 'review'].filter(option => option !== status);
+    const labels = { match: 'Include', off_topic: 'Exclude', review: 'Return to review' };
+    const model = choice ? `Jev · ${weeklyStatusNames[choice]} · ${Math.round(confidence * 100)}% confidence` : 'No post text';
+    return `<article class="profile-post">
+      <div class="moderation-post-head">
+        <a href="${esc(post.url)}" target="_blank" rel="noopener noreferrer">@${esc(handle)} ↗</a>
+        <time datetime="${esc(post.publishedAt)}">${esc(post.date)}</time>
+      </div>
+      <p class="campaign-post-body">${esc(post.body || 'Post text unavailable.')}</p>
+      <div class="profile-post-meta"><span>${esc(model)}</span>${manualStatus ? '<span>Manually reviewed</span>' : ''}</div>
+      <form class="board-controls campaign-actions" data-weekly-post="${esc(post.id)}" data-revision="${revision}">
+        ${choices.map(option => `<button class="admin-button${option === 'match' ? ' admin-button-primary' : ''}"
+          type="submit" value="${option}">${labels[option]}</button>`).join('')}
+      </form>
+    </article>`;
+  }
+
+  async function loadWeeklyReview(page = 1) {
+    weeklyRequest?.abort();
+    const request = new AbortController();
+    weeklyRequest = request;
+    const feedback = $('weekly-feedback');
+    const week = $('weekly-week').value;
+    const status = $('weekly-status-filter').value;
+    $('weekly-posts').replaceChildren();
+    $('weekly-pagination').hidden = true;
+    $('weekly-page').textContent = '';
+    feedback.textContent = 'Loading weekly review…';
+    try {
+      const data = await getData({ view: 'weekly', status, page, ...(week ? { week } : {}) }, request.signal);
+      if (request.signal.aborted) return;
+      displayWeeks($('weekly-week'), data);
+      $('weekly-topic').textContent = data.week?.topic ?? '';
+      $('weekly-counts').textContent = `${data.counts.review} need review · ${data.counts.match} included · ${data.counts.off_topic} excluded`;
+      $('weekly-posts').innerHTML = data.posts.map(weeklyCard).join('');
+      weeklyPage = data.page;
+      $('weekly-pagination').hidden = data.totalPages <= 1;
+      $('weekly-prev').disabled = weeklyPage <= 1;
+      $('weekly-next').disabled = weeklyPage >= data.totalPages;
+      $('weekly-page').textContent = data.totalPages > 1 ? `Page ${weeklyPage} of ${data.totalPages}` : '';
+      feedback.textContent = data.posts.length ? '' : 'No posts with this status.';
+    } catch (error) {
+      if (request.signal.aborted) return;
+      if (error.status === 401) return showAdminSignIn('Your session has expired.');
+      feedback.textContent = error.message;
+    }
+  }
+
   function showPage() {
-    const key = admin ? (adminSignedIn ? 'leaderboard' : '')
-      : ['leaderboard', 'methodology', 'about'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'leaderboard';
-    document.querySelectorAll('.page').forEach(el => { el.hidden = el.id !== 'page-' + key; });
+    const hash = location.hash.slice(1);
+    const key = admin ? (adminSignedIn ? (hash === 'weekly-review' ? hash : 'leaderboard') : '')
+      : ['leaderboard', 'campaign', 'methodology', 'about'].includes(hash) ? hash : 'leaderboard';
+    const campaign = key === 'campaign';
+    const board = campaign || key === 'leaderboard';
+    document.querySelectorAll('.page').forEach(el => { el.hidden = el.id !== 'page-' + (campaign ? 'leaderboard' : key); });
     document.querySelectorAll('[data-page]').forEach(el => { el.classList.toggle('active', el.dataset.page === key); if (el.dataset.page === key) el.setAttribute('aria-current', 'page'); else el.removeAttribute('aria-current'); });
-    $('load-status').hidden = key !== 'leaderboard' || loadedBoard;
+    $('load-status').hidden = !board || loadedBoard;
+    $('map-section').hidden = campaign;
+    $('campaign-intro').hidden = !campaign;
+    $('post-total-label').textContent = campaign ? 'POSTS INCLUDED' : 'POSTS INDEXED';
+    $('board-title').textContent = admin ? 'Moderation' : campaign ? 'Weekly leaderboard' : 'Leaderboard';
+    if (key === 'weekly-review') loadWeeklyReview();
+    else weeklyRequest?.abort();
+    if (!board) {
+      boardRequest?.abort();
+      boardMode = null;
+      return;
+    }
+    if (boardMode !== key) {
+      boardMode = key;
+      clearTimeout(searchTimer);
+      $('search').value = '';
+      resetBoard();
+      loadBoard(1);
+    }
     if (key === 'leaderboard' && loadedBoard) buildMap();
   }
   document.addEventListener('click', event => { const target = event.target.closest('[data-creator]'); if (target) openCreator(target.dataset.creator); });
-  document.addEventListener('keydown', event => { const target = event.target.closest('tr[data-creator]'); if (target && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); openCreator(target.dataset.creator); } if (event.key === '/' && !event.target.matches('input,textarea') && location.hash !== '#about' && location.hash !== '#methodology') { event.preventDefault(); $('search').focus(); } });
+  document.addEventListener('keydown', event => { const target = event.target.closest('tr[data-creator]'); if (target && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); openCreator(target.dataset.creator); } if (event.key === '/' && boardMode && !event.target.matches('input,textarea,select')) { event.preventDefault(); $('search').focus(); } });
   document.addEventListener('error', event => { if (event.target.matches?.('img.avatar')) { const replacement = document.createElement('span'); replacement.className = 'avatar avatar-fallback'; replacement.textContent = '?'; event.target.replaceWith(replacement); } else if (event.target.closest?.('.map-tile') && event.target.tagName === 'IMG') { const fallback = event.target.dataset.fallback; if (fallback && event.target.src !== fallback) { delete event.target.dataset.fallback; event.target.src = fallback; } else event.target.remove(); } }, true);
   $('close-dialog').addEventListener('click', () => $('creator-dialog').close());
   $('creator-dialog').addEventListener('click', event => { if (event.target === $('creator-dialog')) $('creator-dialog').close(); });
@@ -321,6 +433,7 @@
     profileRequest?.abort();
     profileRequest = null;
     profileId = null;
+    profileWeek = null;
     profileSnapshot = null;
   });
   $('dialog-content').addEventListener('click', event => {
@@ -340,6 +453,29 @@
     button.textContent = expand ? 'Show less' : 'Show more';
   });
   if (admin) {
+    $('weekly-week').addEventListener('change', () => loadWeeklyReview());
+    $('weekly-status-filter').addEventListener('change', () => loadWeeklyReview());
+    $('weekly-prev').addEventListener('click', () => loadWeeklyReview(weeklyPage - 1));
+    $('weekly-next').addEventListener('click', () => loadWeeklyReview(weeklyPage + 1));
+    $('weekly-posts').addEventListener('submit', async event => {
+      const form = event.target.closest('form[data-weekly-post]');
+      if (!form) return;
+      event.preventDefault();
+      if (weeklyBusy || !event.submitter) return;
+      weeklyBusy = true;
+      for (const button of form.querySelectorAll('button')) button.disabled = true;
+      try {
+        await getData({}, null, { action: 'campaign-review', week: $('weekly-week').value,
+          postId: form.dataset.weeklyPost, revision: Number(form.dataset.revision), status: event.submitter.value });
+        if (location.hash === '#weekly-review') await loadWeeklyReview(weeklyPage);
+      } catch (error) {
+        if (error.status === 401) showAdminSignIn('Your session has expired.');
+        else $('weekly-feedback').textContent = error.message;
+      } finally {
+        weeklyBusy = false;
+        for (const button of form.querySelectorAll('button')) button.disabled = false;
+      }
+    });
     $('dialog-content').addEventListener('submit', async event => {
       const form = event.target.closest('form[data-action]');
       if (!form) return;
@@ -371,6 +507,10 @@
     });
     $('review-filter').addEventListener('change', () => loadBoard(1));
   }
+  $('campaign-week').addEventListener('change', () => {
+    resetBoard();
+    loadBoard(1);
+  });
   $('search').addEventListener('input', () => {
     boardRequest?.abort();
     clearTimeout(searchTimer);
@@ -385,7 +525,7 @@
     loadBoard(page, true);
   });
   window.addEventListener('hashchange', showPage);
-  window.addEventListener('resize', () => { if (!$('page-leaderboard').hidden) buildMap(); });
+  window.addEventListener('resize', () => { if (boardMode === 'leaderboard') buildMap(); });
 
   function showAdminSignIn(message = '') {
     adminSignedIn = false;
@@ -398,6 +538,7 @@
     leaders = [];
     loadedBoard = false;
     $('admin-sign-out').hidden = true;
+    $('admin-navigation').hidden = true;
     $('admin-access-status').textContent = message;
     $('admin-sign-in').hidden = false;
     showPage();
@@ -407,8 +548,8 @@
     adminSignedIn = true;
     $('admin-sign-in').hidden = true;
     $('admin-sign-out').hidden = false;
+    $('admin-navigation').hidden = false;
     showPage();
-    loadBoard(1);
   }
 
   async function initAdmin() {
@@ -419,7 +560,6 @@
     $('admin-public-link').hidden = false;
     $('review-filter-label').hidden = false;
     $('review-column').hidden = false;
-    $('board-heading').textContent = 'Moderation';
     showPage();
     $('admin-sign-in-form').addEventListener('submit', async event => {
       event.preventDefault();
@@ -449,5 +589,5 @@
   }
 
   if (admin) initAdmin();
-  else { showPage(); loadBoard(1); }
+  else showPage();
 })();

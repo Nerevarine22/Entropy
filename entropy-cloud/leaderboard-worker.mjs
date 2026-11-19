@@ -2,7 +2,9 @@ import { creatorSummary, EARLY_CREATOR_PERIOD, POST_PAGE_SIZE, rankPage, request
 import { handleAdmin } from './admin-worker.mjs';
 import { collectLeaderboardPage } from './leaderboard-ingestion.mjs';
 import { collectSmartFollowers } from './leaderboard-smart-followers.mjs';
-import { currentControl, rankingReviews, storedRecords } from './moderation-store.mjs';
+import { currentControl, ModerationError, rankingReviews, storedRecords } from './moderation-store.mjs';
+import { campaignEntries, campaignReviewPage, selectCampaign } from './campaign-store.mjs';
+import { collectCampaignDecisions } from './campaign-ingestion.mjs';
 
 const METRICS = ['impressions', 'likes', 'reposts', 'quotes', 'replies'];
 const xId = value => typeof value === 'string' && /^[1-9]\d*$/.test(value);
@@ -88,7 +90,10 @@ async function cached(cache, key, build) {
   return cacheFills.get(key);
 }
 
-async function readDataset(db, includeText, generation, includeExcluded = false) {
+async function readDataset(db, includeText, generation, includeExcluded = false, week) {
+  const campaignFilter = week ? `AND (kind<>'post' OR EXISTS (
+    SELECT 1 FROM entropy_campaign_decisions WHERE week_id=? AND rubric_id=? AND post_id=entropy_records.record_id
+  ))` : '';
   const { results } = await db.prepare(`
     SELECT kind, record_id, chunk_index,
       CASE WHEN kind LIKE 'state:%' THEN NULL
@@ -97,10 +102,16 @@ async function readDataset(db, includeText, generation, includeExcluded = false)
     FROM entropy_records
     WHERE generation = ?
       AND kind IN ('dataset-meta', 'author', 'post', 'state:bans', 'state:periodDecisions', 'state:postExclusions')
+      ${campaignFilter}
     ORDER BY kind, record_id, chunk_index
-  `).bind(includeText ? 1 : 0, generation).all();
+  `).bind(includeText ? 1 : 0, generation, ...(week ? [week.id, week.rubricId] : [])).all();
   if (!results.length) throw new Error('Missing published generation.');
   return publicDataset(results, includeExcluded);
+}
+
+export async function readCampaignSource(db) {
+  const control = await currentControl(db);
+  return readDataset(db, true, control.generation, true);
 }
 
 async function rankingSnapshot(env, url, control) {
@@ -138,6 +149,35 @@ async function adminRanking(env, url) {
   return rankPage({ ...snapshot, rows }, requestedPage(url.searchParams.get('page')), searchQuery(url));
 }
 
+async function loadCampaign(db, url) {
+  const { week, view } = await selectCampaign(db, url.searchParams.get('week'));
+  if (!week) return { view, dataset: { meta: { asOf: null }, authors: [], posts: [] }, entries: [] };
+  const control = await currentControl(db);
+  const dataset = await readDataset(db, true, control.generation, true, week);
+  return { view, dataset, entries: await campaignEntries(db, week, dataset.posts) };
+}
+
+async function adminCampaign(db, url) {
+  const { view, dataset, entries } = await loadCampaign(db, url);
+  return { ...view, ...campaignReviewPage(entries, dataset.authors, url) };
+}
+
+async function publicCampaign(db, url, profile) {
+  const { view, dataset, entries } = await loadCampaign(db, url);
+  const posts = entries.filter(entry => entry.status === 'match').map(entry => entry.post);
+  const snapshot = summarize({ ...dataset, posts });
+  const page = requestedPage(url.searchParams.get('page'));
+  if (!profile) return Response.json({ ...view, ...rankPage(snapshot, page, searchQuery(url)) }, { headers: privateHeaders });
+  const id = url.searchParams.get('creator');
+  const row = snapshot.rows.find(creator => creator.author.id === id);
+  const totalPages = row ? Math.ceil(row.postCount / POST_PAGE_SIZE) : 0;
+  if (!row || page > totalPages) return Response.json({ error: 'Profile not found.' }, { status: 404, headers: privateHeaders });
+  const offset = (page - 1) * POST_PAGE_SIZE;
+  const byId = new Map(posts.map(({ excluded, ...post }) => [post.id, post]));
+  return Response.json({ ...creatorSummary(row), posts: row.postIds.slice(offset, offset + POST_PAGE_SIZE).map(id => byId.get(id)),
+    offset, page, totalPages }, { headers: privateHeaders });
+}
+
 async function readProfilePage(db, id, postIds) {
   // The snapshot provides the IDs, so opening a profile performs indexed lookups.
   const values = postIds.map(() => '(?)').join(',');
@@ -173,21 +213,28 @@ export default {
       const result = await collectLeaderboardPage(env);
       if (result.status !== 'idle') console.log('Leaderboard ingestion', result);
     } finally {
-      const result = await collectSmartFollowers(env);
-      if (result.status === 'checked' || result.status === 'provider-error') console.log('Smart Followers collection', result);
+      const jobs = await Promise.allSettled([collectSmartFollowers(env), collectCampaignDecisions(env)]);
+      const names = ['Smart Followers collection', 'Campaign collection'];
+      jobs.forEach((job, index) => {
+        if (job.status === 'rejected') console.error(names[index], 'failed');
+        else if (['checked', 'classified', 'provider-error'].includes(job.value.status)) console.log(names[index], job.value);
+      });
     }
   },
 
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (url.pathname === '/api/admin') return handleAdmin(request, env, target => adminRanking(env, target));
+    if (url.pathname === '/api/admin') return handleAdmin(request, env, target => adminRanking(env, target), target => adminCampaign(env.DB, target));
     if (url.pathname !== '/api/leaderboard') return new Response('Not Found', { status: 404 });
     if (request.method !== 'GET') return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'GET' } });
     try {
+      const view = url.searchParams.get('view');
+      if (view === 'campaign' || (view === 'profile' && url.searchParams.has('week'))) {
+        return await publicCampaign(env.DB, url, view === 'profile');
+      }
       const cache = env.previewCache ?? globalThis.caches?.default;
       const control = await currentControl(env.DB);
       const cacheKey = `${url.origin}${CACHE_NAMESPACE}/${control.generation}/${control.revision}/`;
-      const view = url.searchParams.get('view');
       // Existing production clients still consume the legacy response during rollout.
       if (view === null) {
         const dataset = await cached(cache, cacheKey + 'legacy', () => readDataset(env.DB, true, control.generation));
@@ -216,7 +263,8 @@ export default {
       return payload.visible
         ? Response.json({ ...creatorSummary(row), posts: payload.posts, offset, page, totalPages }, { headers: publicHeaders })
         : Response.json({ error: 'Profile not found.' }, { status: 404, headers: privateHeaders });
-    } catch {
+    } catch (error) {
+      if (error instanceof ModerationError) return Response.json({ error: error.message }, { status: error.status, headers: privateHeaders });
       return Response.json({ error: 'Leaderboard temporarily unavailable.' }, { status: 503, headers: { 'Cache-Control': 'no-store' } });
     }
   },

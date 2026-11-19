@@ -12,7 +12,7 @@ export default {
         return json('Moderation is temporarily unavailable.', 503);
       }
       upstream.pathname = '/api/admin';
-      for (const [name, limit] of [['view', 8], ['creator', 24], ['page', 6], ['q', 81], ['status', 12]]) {
+      for (const [name, limit] of [['view', 8], ['creator', 24], ['page', 6], ['q', 81], ['status', 12], ['week', 40]]) {
         const value = here.searchParams.get(name);
         if (value !== null) upstream.searchParams.set(name, value.slice(0, limit));
       }

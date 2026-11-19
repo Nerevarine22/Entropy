@@ -16,8 +16,13 @@
       <a href="#leaderboard" class="brand" aria-label="Entropy Creators home"><img class="brand-mark" src="/entropy-logo.png" alt="" width="36" height="36"><span class="brand-divider"></span><span class="brand-name">CREATORS</span></a>
       <nav id="public-navigation" class="navigation" aria-label="Main navigation">
         <a href="#leaderboard" data-page="leaderboard">Leaderboard</a>
+        <a href="#campaign" data-page="campaign">Campaign</a>
         <a href="#methodology" data-page="methodology">Methodology</a>
         <a href="#about" data-page="about">About</a>
+      </nav>
+      <nav id="admin-navigation" class="navigation" aria-label="Moderation navigation" hidden>
+        <a href="#leaderboard" data-page="leaderboard">Moderation</a>
+        <a href="#weekly-review" data-page="weekly-review">Weekly Review</a>
       </nav>
       <a id="explore-entropy" class="header-link" href="https://pro.entropy.io/" target="_blank" rel="noopener noreferrer">Explore Entropy <span aria-hidden="true">↗</span></a>
       <a id="admin-public-link" class="header-link" href="/" hidden>Public leaderboard <span aria-hidden="true">↗</span></a>
@@ -36,7 +41,17 @@
     </section>
     <p id="load-status" class="empty" role="status" hidden></p>
     <section class="page" id="page-leaderboard">
-      <section class="map-section" aria-labelledby="map-heading">
+      <section id="campaign-intro" class="map-section campaign-intro" aria-labelledby="campaign-heading" hidden>
+        <div class="section-top">
+          <div>
+            <h1 id="campaign-heading">Campaign<span class="heading-dot">.</span></h1>
+            <p id="campaign-topic"></p>
+            <span id="campaign-dates" class="section-meta"></span>
+          </div>
+          <label class="admin-filter campaign-filter"><span>Campaign week</span><select id="campaign-week"></select></label>
+        </div>
+      </section>
+      <section id="map-section" class="map-section" aria-labelledby="map-heading">
         <div class="section-top">
           <div>
             <h1 id="map-heading">Influence map<span class="heading-dot">.</span></h1>
@@ -50,14 +65,14 @@
         <h2 id="overview-heading">Overview</h2>
         <div class="overview-bar">
           <div><span class="overview-label">CREATORS TRACKED</span><strong id="creator-total">—</strong></div>
-          <div><span class="overview-label">POSTS INDEXED</span><strong id="post-total">—</strong></div>
+          <div><span class="overview-label" id="post-total-label">POSTS INDEXED</span><strong id="post-total">—</strong></div>
           <div><span class="overview-label">TOTAL VIEWS</span><strong id="view-total">—</strong></div>
           <div class="overview-update"><span class="status-dot"></span><span id="updated">LOCAL SNAPSHOT</span></div>
         </div>
       </section>
       <section class="leaderboard-section" aria-labelledby="board-heading">
         <div class="section-top board-heading">
-          <h2 id="board-heading" tabindex="-1">Leaderboard<span class="heading-dot">.</span></h2>
+          <h2 id="board-heading" tabindex="-1"><span id="board-title">Leaderboard</span><span class="heading-dot">.</span></h2>
           <div class="board-controls">
             <label id="review-filter-label" class="admin-filter" hidden><span class="sr-only">Filter by review status</span><select id="review-filter"><option value="">All review statuses</option><option value="unreviewed">Not reviewed</option><option value="needs-review">Needs review</option><option value="reviewed">Reviewed</option></select></label>
             <label class="search"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Search by handle" autocomplete="off" aria-label="Search by handle"><span class="search-key" aria-hidden="true">/</span></label>
@@ -90,6 +105,32 @@
           <nav id="board-pagination" aria-label="Leaderboard pagination" hidden></nav>
         </div>
       </section>
+    </section>
+    <section class="page campaign-review" id="page-weekly-review" aria-labelledby="weekly-heading" hidden>
+      <div class="section-top">
+        <div>
+          <h1 id="weekly-heading">Weekly review<span class="heading-dot">.</span></h1>
+          <p id="weekly-topic"></p>
+        </div>
+        <div class="board-controls">
+          <label class="admin-filter campaign-filter"><span>Week</span><select id="weekly-week"></select></label>
+          <label class="admin-filter campaign-filter"><span>Status</span><select id="weekly-status-filter">
+            <option value="review">Needs review</option>
+            <option value="match">Included</option>
+            <option value="off_topic">Excluded</option>
+          </select></label>
+        </div>
+      </div>
+      <p id="weekly-counts" class="section-meta"></p>
+      <p id="weekly-feedback" class="board-footer" role="status"></p>
+      <div id="weekly-posts" class="profile-posts"></div>
+      <div class="board-footer">
+        <span id="weekly-page"></span>
+        <nav id="weekly-pagination" class="board-controls" aria-label="Weekly review pagination" hidden>
+          <button id="weekly-prev" class="admin-button" type="button">Previous</button>
+          <button id="weekly-next" class="admin-button" type="button">Next</button>
+        </nav>
+      </div>
     </section>
     <section class="page info-page" id="page-methodology" hidden>
       <div class="eyebrow"><span class="status-dot"></span> BEHIND THE NUMBERS</div>
