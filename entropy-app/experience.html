@@ -17,7 +17,6 @@
       <nav id="public-navigation" class="navigation" aria-label="Main navigation">
         <a href="#leaderboard" data-page="leaderboard">Leaderboard</a>
         <a href="#campaign" data-page="campaign">Campaign</a>
-        <a id="my-stats-nav" href="#my-stats" data-page="my-stats" hidden>My Stats</a>
         <a href="#methodology" data-page="methodology">Methodology</a>
         <a href="#about" data-page="about">About</a>
       </nav>
@@ -25,7 +24,10 @@
         <a href="#leaderboard" data-page="leaderboard">Moderation</a>
         <a href="#weekly-review" data-page="weekly-review">Weekly Review</a>
       </nav>
-      <a id="explore-entropy" class="header-link" href="https://pro.entropy.io/" target="_blank" rel="noopener noreferrer">Explore Entropy <span aria-hidden="true">↗</span></a>
+      <div id="public-header-actions" class="header-actions">
+        <a class="header-link" href="https://pro.entropy.io/" target="_blank" rel="noopener noreferrer">Explore Entropy <span aria-hidden="true">↗</span></a>
+        <a id="my-stats-nav" class="header-stats-button" href="#my-stats" data-page="my-stats" hidden><span class="header-stats-icon" aria-hidden="true"></span>My Stats</a>
+      </div>
       <a id="admin-public-link" class="header-link" href="/" hidden>Public leaderboard <span aria-hidden="true">↗</span></a>
       <button id="admin-sign-out" class="admin-button" type="button" hidden>Sign out</button>
     </div>

@@ -797,7 +797,7 @@
     document.body.classList.add('admin-mode');
     document.title = 'Moderation · Entropy Creators';
     $('public-navigation').hidden = true;
-    $('explore-entropy').hidden = true;
+    $('public-header-actions').hidden = true;
     $('admin-public-link').hidden = false;
     $('review-filter-label').hidden = false;
     $('review-column').hidden = false;

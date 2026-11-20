@@ -306,6 +306,44 @@
   .admin-mode .brand { margin-right: 0; }
   .admin-mode .header-link { margin-left: auto; }
 }
+.header-actions { display: flex; align-items: center; gap: 18px; margin-left: auto; }
+.header-actions .header-link { margin-left: 0; white-space: nowrap; }
+.header-stats-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border: 1px solid #466354;
+  border-radius: 6px;
+  background: #1b2b23;
+  color: #caf2dd;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.header-stats-button:hover { background: #283f33; border-color: #8db59e; }
+.header-stats-button.active { color: #102017; background: #c5f5dd; border-color: #c5f5dd; }
+.header-stats-icon {
+  width: 11px;
+  height: 11px;
+  background:
+    linear-gradient(currentColor, currentColor) left bottom / 2px 4px,
+    linear-gradient(currentColor, currentColor) center bottom / 2px 7px,
+    linear-gradient(currentColor, currentColor) right bottom / 2px 11px;
+  background-repeat: no-repeat;
+}
+@media (701px <= width <= 860px) {
+  .header-inner:has(.header-actions:not([hidden])) { gap: 14px; }
+  #public-navigation { gap: 3px; }
+  #public-navigation a { padding-inline: 9px; }
+  .header-actions { gap: 12px; }
+}
+@media (max-width: 700px) {
+  .header-actions { gap: 12px; }
+}
+@media (max-width: 360px) {
+  .header-inner:has(.header-actions:not([hidden])) :is(.brand-name, .brand-divider) { display: none; }
+}
 body:has(#page-my-stats:not([hidden])) {
   display: flex;
   flex-direction: column;
