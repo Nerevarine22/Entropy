@@ -312,20 +312,19 @@
   margin: 0 auto;
   padding: clamp(28px, 4.5vw, 60px) 0 72px;
 }
-.my-stats .section-top { align-items: center; margin-bottom: 20px; }
-.my-stats-access,
+.my-stats .section-top { align-items: end; margin-bottom: 24px; }
+.my-stats-search { display: flex; gap: 8px; align-items: stretch; }
+.my-stats-search .search { width: clamp(155px, 22vw, 255px); }
+.my-stats-search .search > span { font-size: 14px; }
+.my-stats-search .admin-button { white-space: nowrap; }
 .my-stats-metrics,
 .my-stats-weeks {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 8px;
 }
-.my-stats-access { max-width: 520px; padding: 24px; }
-.my-stats-access > p:first-child { margin: 0 0 16px; }
-.my-stats-access .admin-button { display: inline-flex; gap: 14px; align-items: center; }
 .my-stats-muted,
 .my-stats-feedback { color: #a3aba5; line-height: 1.5; }
-.my-stats-access .my-stats-muted { margin: 0; }
 .my-stats-identity { padding: 10px 0 24px; }
 .my-stats-identity .avatar { flex: none; }
 .my-stats-identity h2 { overflow-wrap: anywhere; }
@@ -369,6 +368,8 @@
 }
 .my-stats-top .profile-post-meta { flex-wrap: wrap; }
 @media (max-width: 700px) {
+  .my-stats .section-top { flex-direction: column; align-items: stretch; }
+  .my-stats-search .search { flex: 1; min-width: 0; }
   .my-stats-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .my-stats-metrics > div { min-height: 96px; padding: 14px; }
   .my-stats-metrics > div:nth-child(3) { border-left: 0; }

@@ -75,15 +75,18 @@ test('My Stats uses the public ranks, yesterday’s snapshot and the best counte
     put('dataset-meta', 'main', { asOf: '2026-11-20T00:00:00Z' });
     put('author', '41', { id: '41', handle: 'other', followers: 100 });
     put('author', '42', { id: '42', handle: 'verified', followers: 100, twitterScore: { smartFollowers: 8 } });
+    put('author', '43', { id: '43', handle: 'removed', twitterScore: { smartFollowers: 15 } });
     savePost('100', '41', 1500);
     savePost('101', '42', 100);
     savePost('102', '42', 400);
     savePost('103', '42', 9000);
+    savePost('104', '43', 10000);
     approvePost('100', 'match');
     approvePost('101', 'review');
     approvePost('102', 'match');
     approvePost('103', 'match');
     put('state:postExclusions', '103', { authorId: '42' });
+    put('state:postExclusions', '104', { authorId: '43' });
     const env = { DB: localD1Binding(db) };
     const url = new URL(origin);
     const today = Date.parse('2026-11-20T08:00:00Z');
@@ -103,6 +106,19 @@ test('My Stats uses the public ranks, yesterday’s snapshot and the best counte
     assert.equal(stats.smartFollowers, 8);
     assert.equal((await readMyStats(env, url, '42', yesterday)).overall.rankChange, null);
     assert.equal((await readMyStats(env, url, '99', today)).overall.rank, null);
+
+    const lookup = q => worker.fetch(new Request(new URL(`/api/leaderboard?view=stats&q=${encodeURIComponent(q)}`, url)), env);
+    const response = await lookup(' @VERIFIED ');
+    assert.equal(response.status, 200);
+    const found = await response.json();
+    assert.equal(found.account.handle, 'verified');
+    assert.equal(found.stats.overall.rank, stats.overall.rank);
+    assert.equal(found.stats.weeks[0].rank, stats.weeks[0].rank);
+    assert.equal(found.stats.topPost.id, stats.topPost.id);
+    assert.equal(found.stats.smartFollowers, 8);
+    assert.equal((await lookup('veri')).status, 404);
+    assert.equal((await lookup('removed')).status, 404);
+    assert.equal((await lookup('invalid handle')).status, 400);
   } finally { db.close(); }
 });
 

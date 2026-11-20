@@ -446,57 +446,33 @@
       </div>`;
   }
 
-  async function loadMyStats() {
+  async function loadMyStats(event) {
+    event.preventDefault();
     myStatsRequest?.abort();
-    const request = myStatsRequest = new AbortController();
+    const handle = $('my-stats-handle').value.trim().replace(/^@/, '');
     const feedback = $('my-stats-feedback');
-    const messages = { failed: 'X sign-in could not be completed. Try again.', cancelled: 'X sign-in was cancelled.',
-      unavailable: 'X sign-in is not available.' };
-    const url = new URL(location.href);
-    const authMessage = messages[url.searchParams.get('x_login')];
-    if (url.searchParams.has('x_login')) {
-      url.searchParams.delete('x_login');
-      history.replaceState(null, '', url);
-    }
+    const content = $('my-stats-content');
+    content.hidden = true;
     feedback.hidden = false;
-    feedback.textContent = 'Loading your stats…';
-    $('my-stats-sign-in').hidden = true;
-    $('my-stats-content').hidden = true;
-    $('my-stats-sign-out').hidden = true;
-    try {
-      const response = await fetch('/api/my-stats', { signal: AbortSignal.any([request.signal, AbortSignal.timeout(12000)]) });
-      const data = await response.json();
-      if (request.signal.aborted) return;
-      $('my-stats-sign-out').hidden = !data.account;
-      if (!response.ok) throw new Error(data.error);
-      feedback.textContent = typeof authMessage === 'string' ? authMessage : '';
-      feedback.hidden = !feedback.textContent;
-      if (data.account) {
-        renderMyStats(data.account, data.stats);
-        $('my-stats-content').hidden = false;
-      } else {
-        $('my-stats-connect').hidden = !data.configured;
-        $('my-stats-config').hidden = data.configured;
-        $('my-stats-sign-in').hidden = false;
-      }
-    } catch {
-      if (!request.signal.aborted) feedback.textContent = 'Your stats are temporarily unavailable. Try reloading this page.';
+    if (!/^[A-Za-z0-9_]{1,15}$/.test(handle)) {
+      feedback.textContent = 'Enter a valid X username.';
+      return;
     }
-  }
-
-  async function signOutMyStats() {
-    const button = $('my-stats-sign-out');
-    button.disabled = true;
+    const request = myStatsRequest = new AbortController();
+    feedback.textContent = 'Loading creator stats…';
     try {
-      const response = await fetch('/api/my-stats/logout', { method: 'POST', signal: AbortSignal.timeout(12000) });
-      if (!response.ok) throw new Error('Sign-out failed.');
-      $('my-stats-content').replaceChildren();
-      if (location.hash === '#my-stats') await loadMyStats();
-    } catch {
-      const feedback = $('my-stats-feedback');
-      feedback.textContent = 'Could not sign out. Try again.';
-      feedback.hidden = false;
-    } finally { button.disabled = false; }
+      const data = await getData({ view: 'stats', q: handle }, request.signal);
+      if (request.signal.aborted) return;
+      renderMyStats(data.account, data.stats);
+      content.hidden = false;
+      feedback.textContent = '';
+      feedback.hidden = true;
+    } catch (error) {
+      if (!request.signal.aborted) feedback.textContent = error.status === 404
+        ? 'This username isn’t on the leaderboard yet.' : 'Creator stats are temporarily unavailable. Try again.';
+    } finally {
+      if (myStatsRequest === request) myStatsRequest = null;
+    }
   }
 
   function showPage() {
@@ -514,8 +490,10 @@
     $('board-title').textContent = admin ? 'Moderation' : campaign ? 'Weekly leaderboard' : 'Leaderboard';
     if (key === 'weekly-review') loadWeeklyReview();
     else weeklyRequest?.abort();
-    if (key === 'my-stats') loadMyStats();
-    else myStatsRequest?.abort();
+    if (key !== 'my-stats' && myStatsRequest) {
+      myStatsRequest.abort();
+      $('my-stats-feedback').hidden = true;
+    }
     if (!board) {
       boardRequest?.abort();
       boardMode = null;
@@ -696,7 +674,7 @@
 
   if (statsEnabled) {
     $('my-stats-nav').hidden = false;
-    $('my-stats-sign-out').addEventListener('click', signOutMyStats);
+    $('my-stats-form').addEventListener('submit', loadMyStats);
   }
   if (admin) initAdmin();
   else showPage();

@@ -220,15 +220,14 @@ async function readProfilePage(db, id, postIds) {
   return { posts: postIds.map(key => byId.get(key)).filter(Boolean), visible };
 }
 
-async function loadStatsBoards(env, url) {
-  const [control, { weeks: registered }] = await Promise.all([currentControl(env.DB), selectCampaign(env.DB, null)]);
-  const overall = await rankingSnapshot(env, url, control);
+async function loadStatsWeeks(env, url, control) {
+  const { weeks: registered } = await selectCampaign(env.DB, null);
   const weeks = [];
   for (const week of registered) {
     const { snapshot } = await campaignSnapshot(env, url, control, week);
     weeks.push({ id: week.id, label: week.label, historyKey: `${week.id}/${week.rubricId}`, snapshot });
   }
-  return { overall, weeks };
+  return weeks;
 }
 
 async function readTopPost(db, id, topPost) {
@@ -239,20 +238,46 @@ async function readTopPost(db, id, topPost) {
 }
 
 export function captureDailyRanks(env, url, now = Date.now()) {
-  return storeDailyRanks(env.DB, () => loadStatsBoards(env, url), now);
+  return storeDailyRanks(env.DB, async () => {
+    const control = await currentControl(env.DB);
+    const [overall, weeks] = await Promise.all([rankingSnapshot(env, url, control), loadStatsWeeks(env, url, control)]);
+    return { overall, weeks };
+  }, now);
 }
 
-export async function readMyStats(env, url, id, now = Date.now()) {
-  const [{ overall, weeks }, previous] = await Promise.all([loadStatsBoards(env, url), yesterdayRanks(env.DB, id, now)]);
-  const row = overall.rows.find(({ author }) => author.id === id);
-  const indexed = row ?? overall.adminRows.find(({ author }) => author.id === id);
+async function creatorStats(env, url, control, id, row, smartFollowers, now) {
+  const [weeks, previous, topPost] = await Promise.all([
+    loadStatsWeeks(env, url, control), yesterdayRanks(env.DB, id, now), readTopPost(env.DB, id, row?.topPost),
+  ]);
   return {
     overall: { ...personalRank(row, previous.get(overallKey)), views: row?.views ?? null, score: row?.score ?? null },
     weeks: weeks.map(week => ({ id: week.id, label: week.label,
       ...personalRank(week.snapshot.rows.find(({ author }) => author.id === id), previous.get(week.historyKey)) })),
-    smartFollowers: indexed?.author.twitterScore?.smartFollowers ?? null,
-    topPost: await readTopPost(env.DB, id, row?.topPost),
+    smartFollowers,
+    topPost,
   };
+}
+
+export async function readMyStats(env, url, id, now = Date.now()) {
+  const control = await currentControl(env.DB);
+  const overall = await rankingSnapshot(env, url, control);
+  const row = overall.rows.find(({ author }) => author.id === id);
+  const indexed = row ?? overall.adminRows.find(({ author }) => author.id === id);
+  return creatorStats(env, url, control, id, row, indexed?.author.twitterScore?.smartFollowers ?? null, now);
+}
+
+async function publicCreatorStats(env, url) {
+  const handle = searchQuery(url);
+  if (!/^[a-z0-9_]{1,15}$/.test(handle)) {
+    return Response.json({ error: 'Enter a valid X username.' }, { status: 400, headers: privateHeaders });
+  }
+  const control = await currentControl(env.DB);
+  const snapshot = await rankingSnapshot(env, url, control);
+  const row = snapshot.rows.find(({ author }) => author.handle.toLowerCase() === handle);
+  if (!row) return Response.json({ error: 'No creator found.' }, { status: 404, headers: privateHeaders });
+  const { id, handle: username, displayName, avatarUrl, twitterScore } = row.author;
+  const stats = await creatorStats(env, url, control, id, row, twitterScore?.smartFollowers ?? null, Date.now());
+  return Response.json({ account: { handle: username, displayName, avatarUrl }, stats }, { headers: privateHeaders });
 }
 
 export default {
@@ -269,11 +294,9 @@ export default {
         if (job.status === 'rejected') console.error(names[index], 'failed');
         else if (['checked', 'classified', 'provider-error'].includes(job.value.status)) console.log(names[index], job.value);
       });
-      if (env.X_STATS_SERVICE_KEY) {
-        try {
-          if (await captureDailyRanks(env, new URL('https://entropy-rank-snapshots.internal'))) console.log('Saved daily leaderboard ranks');
-        } catch { console.error('Could not save daily leaderboard ranks'); }
-      }
+      try {
+        if (await captureDailyRanks(env, new URL('https://entropy-rank-snapshots.internal'))) console.log('Saved daily leaderboard ranks');
+      } catch { console.error('Could not save daily leaderboard ranks'); }
     }
   },
 
@@ -295,6 +318,7 @@ export default {
     if (request.method !== 'GET') return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'GET' } });
     try {
       const view = url.searchParams.get('view');
+      if (view === 'stats') return await publicCreatorStats(env, url);
       if (view === 'campaign' || (view === 'profile' && url.searchParams.has('week'))) {
         return await publicCampaign(env, url, view === 'profile');
       }

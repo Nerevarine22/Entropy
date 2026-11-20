@@ -20,13 +20,15 @@ node serve.mjs
 
 ## My Stats
 
-У X Developer Console увімкніть OAuth 2.0 для застосунку типу **Web App** з дозволом **Read**. Додайте callback `http://127.0.0.1:8767/api/my-stats/callback`. Якщо змінюєте `ENTROPY_PORT`, налаштуйте відповідний порт у callback. Збережіть `X_CLIENT_ID` і `X_CLIENT_SECRET` у приватному файлі `.env` у каталозі `entropy-app`, потім запустіть `node --env-file=.env serve.mjs`.
+Застосуйте `entropy-cloud/drizzle/0006_daily_ranks.sql` до бази й відкрийте [My Stats](http://127.0.0.1:8767/#my-stats). Сторінка знаходить автора за точним X username серед учасників публічного рейтингу. Цей режим працює з даними D1 без OAuth та запитів до X.
 
-Застосуйте `entropy-cloud/drizzle/0006_daily_ranks.sql` до бази й відкрийте [My Stats](http://127.0.0.1:8767/#my-stats). Вхід використовує OAuth 2.0 з PKCE й запитує ідентичність через `/2/users/me`. X ID зв’язує сесію з місцями в рейтингах. Для локального запуску `X_SESSION_SECRET` за бажанням зберігає сесію між перезапусками.
+Локальний сервер і Cloudflare Worker зберігають знімок місць раз на добу UTC. My Stats порівнює поточне місце зі знімком попереднього дня, якщо він є. Найкращий пост визначається тією самою формулою Creator Score, застосованою до одного зарахованого поста.
 
-Перший запуск локального сервера кожного дня UTC зберігає знімок місць у локальній D1. У проді знімок раз на день зберігає Cloudflare Worker. My Stats порівнює поточне місце зі знімком попереднього дня, якщо він є. Найкращий пост визначається тією самою формулою Creator Score, застосованою до одного зарахованого поста.
+### OAuth для майбутнього підключення входу
 
-Для Vercel додайте callback `https://entropy-entropy-app.vercel.app/api/my-stats/callback` у X та змінні `X_CLIENT_ID`, `X_CLIENT_SECRET` і `X_SESSION_SECRET` у середовище Production. `X_SESSION_SECRET` має містити 64 випадкові малі шістнадцяткові символи. Cloudflare Worker отримує окремий секрет `X_STATS_SERVICE_KEY`, який обчислюється через `statsServiceKey` з `api/my-stats.mjs`. `LEADERBOARD_API_URL` використовує наявне підключення Vercel до Worker. Для іншого домену вкажіть `X_OAUTH_ORIGIN` і зареєструйте відповідний callback у X.
+Серверний OAuth використовує PKCE та `/2/users/me`. У X Developer Console створіть **Web App** з дозволом **Read**. Для локального сервера callback `http://127.0.0.1:8767/api/my-stats/callback`, а для Vercel `https://entropy-entropy-app.vercel.app/api/my-stats/callback`. Для іншого домену Vercel вкажіть `X_OAUTH_ORIGIN` і зареєструйте відповідний callback у X.
+
+Для Vercel додайте `X_CLIENT_ID`, `X_CLIENT_SECRET` і `X_SESSION_SECRET` у середовище Production. `X_SESSION_SECRET` має містити 64 випадкові малі шістнадцяткові символи. Cloudflare Worker отримує секрет `X_STATS_SERVICE_KEY`, який обчислюється через `statsServiceKey` з `api/my-stats.mjs`. `LEADERBOARD_API_URL` використовує наявне підключення Vercel до Worker.
 
 ## Адмінка публічного лідерборду
 
