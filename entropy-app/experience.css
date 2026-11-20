@@ -311,27 +311,31 @@
 .header-stats-button {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 9px 12px;
+  justify-content: center;
+  width: 40px;
+  height: 36px;
   border: 1px solid #fff;
   border-radius: 6px;
   background: #fff;
   color: #151515;
-  font-size: 12px;
-  font-weight: 600;
-  white-space: nowrap;
 }
 .header-stats-button:hover { background: #eee; border-color: #eee; }
 .header-stats-button.active { box-shadow: inset 0 0 0 1px #bdbdbd; }
 .header-stats-icon {
-  width: 11px;
-  height: 11px;
-  background:
-    linear-gradient(currentColor, currentColor) left bottom / 2px 4px,
-    linear-gradient(currentColor, currentColor) center bottom / 2px 7px,
-    linear-gradient(currentColor, currentColor) right bottom / 2px 11px;
-  background-repeat: no-repeat;
+  position: relative;
+  width: 17px;
+  height: 17px;
 }
+.header-stats-icon::before, .header-stats-icon::after {
+  content: '';
+  position: absolute;
+  box-sizing: border-box;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 2px solid currentColor;
+}
+.header-stats-icon::before { top: 0; width: 7px; height: 7px; border-radius: 50%; }
+.header-stats-icon::after { bottom: 0; width: 16px; height: 7px; border-radius: 9px 9px 3px 3px; }
 @media (701px <= width <= 860px) {
   .header-inner:has(.header-actions:not([hidden])) { gap: 14px; }
   #public-navigation { gap: 3px; }
@@ -340,9 +344,6 @@
 }
 @media (max-width: 700px) {
   .header-actions { gap: 12px; }
-}
-@media (max-width: 360px) {
-  .header-inner:has(.header-actions:not([hidden])) :is(.brand-name, .brand-divider) { display: none; }
 }
 body:has(#page-my-stats:not([hidden])) {
   display: flex;
@@ -585,6 +586,73 @@ body:has(#page-my-stats:not([hidden])) > .footer {
 .stats-posts-status { padding: 8px 4px; }
 .stats-posts-status:empty { display: none; }
 .stats-posts-more { margin-top: 8px; }
+.board-status { margin: 0 0 12px; color: #afb9b2; font-size: 13px; }
+#board-skeleton tr { cursor: default; }
+#board-skeleton tr:hover { background: transparent; }
+#board-skeleton span {
+  display: block;
+  height: 8px;
+  border-radius: 4px;
+  background: #252c28;
+}
+#board-skeleton .skeleton-rank { width: 16px; margin: auto; }
+#board-skeleton .skeleton-avatar { flex: none; width: 34px; height: 34px; border-radius: 50%; }
+#board-skeleton .skeleton-name { width: 92px; }
+#board-skeleton tr:nth-child(3n + 2) .skeleton-name { width: 70px; }
+#board-skeleton tr:nth-child(3n + 3) .skeleton-name { width: 115px; }
+#board-skeleton .skeleton-number { width: 28px; margin-inline-start: auto; }
+.is-initial-loading .influence-map:empty::after {
+  content: '';
+  position: absolute;
+  inset: 6px;
+  background:
+    linear-gradient(#202823, #202823) left top / 38% 100%,
+    linear-gradient(#252e29, #252e29) 56% top / 28% 58%,
+    linear-gradient(#202823, #202823) 56% bottom / 28% 40%,
+    linear-gradient(#1d2520, #1d2520) right top / 30% 34%,
+    linear-gradient(#252e29, #252e29) right bottom / 30% 64%;
+  background-repeat: no-repeat;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .table-scroll, .stats-posts-list, #creator-dialog { scroll-behavior: smooth; }
+  .page:not([hidden]), #my-stats-content:not([hidden]), #creator-dialog[open] {
+    animation: content-appear 210ms cubic-bezier(.2, .65, .35, 1) both;
+  }
+  #leaderboard-body > tr, #creator-dialog[open]::backdrop { animation: fade-in 180ms ease-out both; }
+  .post-full:not([hidden]), .stats-posts-list > .profile-post { animation: fade-in 160ms ease-out both; }
+  #board-skeleton, .is-initial-loading .influence-map:empty::after { animation: skeleton-pulse 1.35s ease-in-out infinite; }
+  .stats-posts-disclosure summary::after { transition: transform 210ms ease; }
+  .header-stats-button, .stats-posts-more { transition: background-color 160ms ease, border-color 160ms ease; }
+
+  @supports (interpolate-size: allow-keywords) and selector(details::details-content) {
+    details:is(.stats-posts-disclosure, .moderation-form, .moderation-history) { interpolate-size: allow-keywords; }
+    details:is(.stats-posts-disclosure, .moderation-form, .moderation-history)::details-content {
+      block-size: 0;
+      opacity: 0;
+      overflow: clip;
+      transition: block-size 220ms ease, opacity 180ms ease, content-visibility 220ms allow-discrete;
+    }
+    details:is(.stats-posts-disclosure, .moderation-form, .moderation-history)[open]::details-content {
+      block-size: auto;
+      opacity: 1;
+    }
+  }
+  @supports not ((interpolate-size: allow-keywords) and selector(details::details-content)) {
+    details:is(.stats-posts-disclosure, .moderation-form, .moderation-history)[open] > :not(summary) {
+      animation: fade-in 180ms ease-out both;
+    }
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .navigation a, .map-tile, tbody tr { transition: none; }
+}
+@keyframes content-appear {
+  from { opacity: .82; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes skeleton-pulse { 0%, 100% { opacity: .9; } 50% { opacity: .52; } }
 @media (max-width: 700px) {
   .my-stats-heading { flex-direction: column; align-items: stretch; margin-bottom: 24px; }
   .my-stats-search .search { flex: 1; min-width: 0; }

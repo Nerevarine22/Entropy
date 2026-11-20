@@ -26,7 +26,7 @@
       </nav>
       <div id="public-header-actions" class="header-actions">
         <a class="header-link" href="https://pro.entropy.io/" target="_blank" rel="noopener noreferrer">Explore Entropy <span aria-hidden="true">↗</span></a>
-        <a id="my-stats-nav" class="header-stats-button" href="#my-stats" data-page="my-stats" hidden><span class="header-stats-icon" aria-hidden="true"></span>My Stats</a>
+        <a id="my-stats-nav" class="header-stats-button" href="#my-stats" data-page="my-stats" aria-label="My Stats" title="My Stats" hidden><span class="header-stats-icon" aria-hidden="true"></span></a>
       </div>
       <a id="admin-public-link" class="header-link" href="/" hidden>Public leaderboard <span aria-hidden="true">↗</span></a>
       <button id="admin-sign-out" class="admin-button" type="button" hidden>Sign out</button>
@@ -42,7 +42,6 @@
       </form>
       <p id="admin-access-status" role="status"></p>
     </section>
-    <p id="load-status" class="empty" role="status" hidden></p>
     <section class="page" id="page-leaderboard">
       <section id="campaign-intro" class="map-section campaign-intro" aria-labelledby="campaign-heading" hidden>
         <div class="section-top">
@@ -81,9 +80,10 @@
             <label class="search"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Search by handle" autocomplete="off" aria-label="Search by handle"><span class="search-key" aria-hidden="true">/</span></label>
           </div>
         </div>
+        <p id="load-status" class="board-status" role="status" hidden></p>
         <div class="table-shell">
           <div class="table-scroll">
-            <table>
+            <table id="leaderboard-table">
               <thead>
                 <tr>
                   <th scope="col">RANK</th>
@@ -99,6 +99,7 @@
                 </tr>
               </thead>
               <tbody id="leaderboard-body"></tbody>
+              <tbody id="board-skeleton" aria-hidden="true" hidden></tbody>
             </table>
           </div>
           <div id="empty" class="empty" hidden>No creators found. Try another handle.</div>

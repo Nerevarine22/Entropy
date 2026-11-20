@@ -30,6 +30,7 @@
   let loadedBoard = false;
   let adminSignedIn = false;
   let boardMode = null;
+  const boardSkeletonDelay = 180;
   const earlyBadge = '<span class="early-badge" title="Posted about Entropy through November 16, 2026 (UTC)">Early</span>';
   const reviewDate = value => value ? new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }).format(new Date(value)) : '';
 
@@ -114,6 +115,38 @@
     renderPagination(totalPages);
   }
 
+  function showBoardSkeleton() {
+    const skeleton = $('board-skeleton');
+    const score = $('score-column').hidden ? '' : '<td><span class="skeleton-number"></span></td>';
+    const review = admin ? '<td><span class="skeleton-number"></span></td>' : '';
+    skeleton.innerHTML = `<tr>
+      <td><span class="skeleton-rank"></span></td>
+      <td><div class="creator"><span class="skeleton-avatar"></span><span class="skeleton-name"></span></div></td>
+      ${score}${'<td><span class="skeleton-number"></span></td>'.repeat(5)}${review}<td></td>
+    </tr>`.repeat(rows.length || 6);
+    $('leaderboard-body').hidden = true;
+    $('empty').hidden = true;
+    skeleton.hidden = false;
+    $('page-leaderboard').classList.toggle('is-initial-loading', !loadedBoard);
+    const status = $('load-status');
+    status.classList.add('sr-only');
+    status.hidden = false;
+    status.textContent = 'Loading leaderboard…';
+  }
+
+  function hideBoardSkeleton() {
+    $('board-skeleton').hidden = true;
+    $('leaderboard-body').hidden = false;
+    $('empty').hidden = !loadedBoard || rows.length > 0;
+    $('page-leaderboard').classList.remove('is-initial-loading');
+    const status = $('load-status');
+    if (status.classList.contains('sr-only')) {
+      status.hidden = true;
+      status.classList.remove('sr-only');
+      status.textContent = '';
+    }
+  }
+
   async function loadBoard(page, scrollToTable = false) {
     if (!boardMode) return;
     const campaign = boardMode === 'campaign';
@@ -121,11 +154,11 @@
     boardRequest?.abort();
     const request = new AbortController();
     boardRequest = request;
-    $('leaderboard-body').setAttribute('aria-busy', 'true');
-    if (!loadedBoard) {
-      $('load-status').hidden = false;
-      $('load-status').textContent = 'Loading leaderboard…';
-    }
+    $('leaderboard-table').setAttribute('aria-busy', 'true');
+    $('load-status').hidden = true;
+    const timer = setTimeout(() => {
+      if (!request.signal.aborted) showBoardSkeleton();
+    }, boardSkeletonDelay);
     const q = $('search').value.trim();
     try {
       const status = admin ? $('review-filter').value : '';
@@ -149,16 +182,21 @@
       if (scrollToTable && !$('page-leaderboard').hidden) {
         const heading = $('board-heading');
         heading.focus({ preventScroll: true });
-        heading.scrollIntoView({ block: 'start', behavior: 'instant' });
+        heading.scrollIntoView({ block: 'start' });
       }
     } catch (error) {
       if (request.signal.aborted) return;
       if (admin && error.status === 401) { showAdminSignIn('Your session has expired.'); return; }
       const status = loadedBoard ? $('board-count') : $('load-status');
+      status.classList.remove('sr-only');
       status.hidden = false;
       status.textContent = 'Could not load the leaderboard. Please try again.';
     } finally {
-      if (boardRequest === request) $('leaderboard-body').setAttribute('aria-busy', 'false');
+      clearTimeout(timer);
+      if (boardRequest === request) {
+        hideBoardSkeleton();
+        $('leaderboard-table').setAttribute('aria-busy', 'false');
+      }
     }
   }
   // Binary treemap: the tile areas reflect the observed share of views.
@@ -348,8 +386,10 @@
     loadedBoard = false;
     rows = [];
     leaders = [];
+    hideBoardSkeleton();
     $('leaderboard-body').replaceChildren();
-    $('empty').hidden = true;
+    $('influence-map').replaceChildren();
+    $('map-count').textContent = '';
     $('board-count').textContent = '';
     $('board-pagination').hidden = true;
     for (const id of ['creator-total', 'post-total', 'view-total', 'updated']) $(id).textContent = '—';
@@ -647,7 +687,6 @@
     const board = campaign || key === 'leaderboard';
     document.querySelectorAll('.page').forEach(el => { el.hidden = el.id !== 'page-' + (campaign ? 'leaderboard' : key); });
     document.querySelectorAll('[data-page]').forEach(el => { el.classList.toggle('active', el.dataset.page === key); if (el.dataset.page === key) el.setAttribute('aria-current', 'page'); else el.removeAttribute('aria-current'); });
-    $('load-status').hidden = !board || loadedBoard;
     $('map-section').hidden = campaign;
     $('campaign-intro').hidden = !campaign;
     $('post-total-label').textContent = campaign ? 'POSTS INCLUDED' : 'POSTS INDEXED';
