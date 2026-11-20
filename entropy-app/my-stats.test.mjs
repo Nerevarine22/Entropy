@@ -8,6 +8,7 @@ import worker, { captureDailyRanks, readMyStats } from '../entropy-cloud/leaderb
 import statsApi, { statsServiceKey } from './api/my-stats.mjs';
 import startApi from './api/my-stats/start.mjs';
 import callbackApi from './api/my-stats/callback.mjs';
+import { postScore } from '../entropy-cloud/leaderboard-view.mjs';
 import { createMyStatsHandler } from './x-sign-in.mjs';
 
 const origin = 'http://127.0.0.1:8767';
@@ -68,19 +69,21 @@ test('My Stats uses the public ranks, yesterday’s snapshot and the best counte
     const insert = db.prepare(`INSERT OR REPLACE INTO entropy_records (generation,kind,record_id,chunk_index,payload,created_at)
       VALUES ('preview',?,?,0,?,0)`);
     const put = (kind, id, value) => insert.run(kind, id, JSON.stringify(value));
-    const savePost = (id, authorId, impressions) => put('post', id, { id, authorId, date: '2026-11-18', isReply: false,
-      publishedAt: '2026-11-18T10:00:00Z', body: `Post ${id}`, metrics: { impressions, likes: 5, reposts: 0, quotes: 0, replies: 0 } });
+    const savePost = (id, authorId, impressions, date = '2026-11-18') => put('post', id, { id, authorId, date, isReply: false,
+      publishedAt: `${date}T10:00:00Z`, body: `Post ${id}`, metrics: { impressions, likes: 5, reposts: 0, quotes: 0, replies: 0 } });
     const approvePost = (id, status) => db.prepare(`INSERT INTO entropy_campaign_decisions
       (week_id,rubric_id,post_id,post_body,model_status) VALUES ('week-1','rubric',?,?,?)`).run(id, `Post ${id}`, status);
     put('dataset-meta', 'main', { asOf: '2026-11-20T00:00:00Z' });
     put('author', '41', { id: '41', handle: 'other', followers: 100 });
     put('author', '42', { id: '42', handle: 'verified', followers: 100, twitterScore: { smartFollowers: 8 } });
     put('author', '43', { id: '43', handle: 'removed', twitterScore: { smartFollowers: 15 } });
+    put('author', '44', { id: '44', handle: 'early' });
     savePost('100', '41', 1500);
     savePost('101', '42', 100);
     savePost('102', '42', 400);
     savePost('103', '42', 9000);
     savePost('104', '43', 10000);
+    savePost('105', '44', 20, '2026-11-16');
     approvePost('100', 'match');
     approvePost('101', 'review');
     approvePost('102', 'match');
@@ -92,19 +95,34 @@ test('My Stats uses the public ranks, yesterday’s snapshot and the best counte
     const today = Date.parse('2026-11-20T08:00:00Z');
     const yesterday = Date.parse('2026-11-19T08:00:00Z');
     assert.equal(await captureDailyRanks(env, url, yesterday), true);
+    const saveRank = db.prepare('INSERT INTO entropy_daily_ranks (day,board,ranks) VALUES (?,?,?)');
+    saveRank.run('2026-11-13', 'overall', '{"42":12}');
+    saveRank.run('2026-11-14', 'overall', '{"42":7}');
+    saveRank.run('2026-11-18', 'week-1/rubric', '{"42":4}');
+    saveRank.run('2026-11-20', 'overall', '{"42":5}');
     savePost('102', '42', 2100);
     assert.equal(await captureDailyRanks(env, url, yesterday), false);
     const stats = await readMyStats(env, url, '42', today);
     assert.equal(stats.overall.rank, 1);
+    assert.equal(stats.overall.previousRank, 2);
+    assert.equal(stats.overall.hasPreviousSnapshot, true);
     assert.equal(stats.overall.rankChange, 1);
     assert.equal(stats.overall.views, 2200);
+    assert.deepEqual(stats.rankHistory, [
+      { day: '2026-11-14', rank: 7 }, { day: '2026-11-15', rank: null }, { day: '2026-11-16', rank: null },
+      { day: '2026-11-17', rank: null }, { day: '2026-11-18', rank: null }, { day: '2026-11-19', rank: 2 },
+      { day: '2026-11-20', rank: 1 },
+    ]);
     assert.equal(stats.weeks[0].rank, 1);
+    assert.equal(stats.weeks[0].previousRank, 2);
     assert.equal(stats.weeks[0].rankChange, 1);
     assert.equal(stats.weeks[0].postCount, 1);
     assert.equal(stats.topPost.id, '102');
     assert.equal(stats.topPost.body, 'Post 102');
     assert.equal(stats.smartFollowers, 8);
-    assert.equal((await readMyStats(env, url, '42', yesterday)).overall.rankChange, null);
+    const withoutHistory = (await readMyStats(env, url, '42', yesterday)).overall;
+    assert.equal(withoutHistory.rankChange, null);
+    assert.equal(withoutHistory.hasPreviousSnapshot, false);
     assert.equal((await readMyStats(env, url, '99', today)).overall.rank, null);
 
     const lookup = q => worker.fetch(new Request(new URL(`/api/leaderboard?view=stats&q=${encodeURIComponent(q)}`, url)), env);
@@ -112,13 +130,29 @@ test('My Stats uses the public ranks, yesterday’s snapshot and the best counte
     assert.equal(response.status, 200);
     const found = await response.json();
     assert.equal(found.account.handle, 'verified');
+    assert.equal(found.account.id, '42');
     assert.equal(found.stats.overall.rank, stats.overall.rank);
+    assert.equal(found.stats.overall.early, false);
+    assert.equal((await (await lookup('early')).json()).stats.overall.early, true);
     assert.equal(found.stats.weeks[0].rank, stats.weeks[0].rank);
     assert.equal(found.stats.topPost.id, stats.topPost.id);
     assert.equal(found.stats.smartFollowers, 8);
     assert.equal((await lookup('veri')).status, 404);
     assert.equal((await lookup('removed')).status, 404);
     assert.equal((await lookup('invalid handle')).status, 400);
+
+    const postsPage = async (creator, page) => worker.fetch(new Request(new URL(`/api/leaderboard?view=posts&creator=${creator}&page=${page}`, url)), env);
+    assert.deepEqual((await (await postsPage('41', 1)).json()).posts, []);
+    assert.equal((await postsPage('43', 1)).status, 404);
+    for (let i = 110; i <= 120; i++) savePost(String(i), '42', null);
+    const first = await (await postsPage('42', 1)).json();
+    const second = await (await postsPage('42', 2)).json();
+    assert.equal(first.posts.length, 10);
+    assert.equal(first.totalPages, 2);
+    assert.equal(second.posts.length, 2);
+    assert.ok(first.posts.every(post => post.score === null));
+    assert.deepEqual(second.posts.map(post => post.id), ['110', '101']);
+    assert.equal(second.posts[1].score, postScore({ followers: 100, twitterScore: { smartFollowers: 8 } }, second.posts[1].metrics));
   } finally { db.close(); }
 });
 

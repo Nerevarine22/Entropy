@@ -1,11 +1,11 @@
-import { creatorSummary, EARLY_CREATOR_PERIOD, POST_PAGE_SIZE, rankPage, requestedPage, summarize } from './leaderboard-view.mjs';
+import { creatorSummary, EARLY_CREATOR_PERIOD, POST_PAGE_SIZE, postScore, rankPage, requestedPage, summarize } from './leaderboard-view.mjs';
 import { handleAdmin } from './admin-worker.mjs';
 import { collectLeaderboardPage } from './leaderboard-ingestion.mjs';
 import { collectSmartFollowers } from './leaderboard-smart-followers.mjs';
 import { currentControl, ModerationError, rankingReviews, storedRecords } from './moderation-store.mjs';
 import { campaignEntries, campaignReviewPage, selectCampaign } from './campaign-store.mjs';
 import { collectCampaignDecisions } from './campaign-ingestion.mjs';
-import { hasStatsServiceAccess, overallKey, personalRank, storeDailyRanks, yesterdayRanks } from './leaderboard-stats.mjs';
+import { hasStatsServiceAccess, overallKey, personalRank, recentRanks, storeDailyRanks } from './leaderboard-stats.mjs';
 
 const METRICS = ['impressions', 'likes', 'reposts', 'quotes', 'replies'];
 const xId = value => typeof value === 'string' && /^[1-9]\d*$/.test(value);
@@ -246,14 +246,16 @@ export function captureDailyRanks(env, url, now = Date.now()) {
 }
 
 async function creatorStats(env, url, control, id, row, smartFollowers, now) {
-  const [weeks, previous, topPost] = await Promise.all([
-    loadStatsWeeks(env, url, control), yesterdayRanks(env.DB, id, now), readTopPost(env.DB, id, row?.topPost),
+  const [weeks, { previous, history }, topPost] = await Promise.all([
+    loadStatsWeeks(env, url, control), recentRanks(env.DB, id, now, row?.rank), readTopPost(env.DB, id, row?.topPost),
   ]);
   return {
-    overall: { ...personalRank(row, previous.get(overallKey)), views: row?.views ?? null, score: row?.score ?? null },
+    overall: { ...personalRank(row, previous.get(overallKey)), views: row?.views ?? null,
+      score: row?.score ?? null, early: row?.early ?? false },
     weeks: weeks.map(week => ({ id: week.id, label: week.label,
       ...personalRank(week.snapshot.rows.find(({ author }) => author.id === id), previous.get(week.historyKey)) })),
     smartFollowers,
+    rankHistory: history,
     topPost,
   };
 }
@@ -277,7 +279,7 @@ async function publicCreatorStats(env, url) {
   if (!row) return Response.json({ error: 'No creator found.' }, { status: 404, headers: privateHeaders });
   const { id, handle: username, displayName, avatarUrl, twitterScore } = row.author;
   const stats = await creatorStats(env, url, control, id, row, twitterScore?.smartFollowers ?? null, Date.now());
-  return Response.json({ account: { handle: username, displayName, avatarUrl }, stats }, { headers: privateHeaders });
+  return Response.json({ account: { id, handle: username, displayName, avatarUrl }, stats }, { headers: privateHeaders });
 }
 
 export default {
@@ -331,7 +333,8 @@ export default {
         return Response.json(dataset, { headers: publicHeaders });
       }
       const id = url.searchParams.get('creator');
-      if (view !== 'ranking' && (view !== 'profile' || !xId(id) || id.length > 24)) {
+      const otherPosts = view === 'posts';
+      if (view !== 'ranking' && (!(view === 'profile' || otherPosts) || !xId(id) || id.length > 24)) {
         return Response.json({ error: 'Invalid leaderboard request.' }, { status: 400, headers: privateHeaders });
       }
       const snapshot = await rankingSnapshot(env, url, control);
@@ -342,17 +345,24 @@ export default {
       }
 
       const row = snapshot.rows.find(creator => creator.author.id === id);
-      const totalPages = row ? Math.ceil(row.postCount / POST_PAGE_SIZE) : 0;
+      const ids = otherPosts ? row?.postIds.filter(postId => postId !== row.topPost?.id) : row?.postIds;
+      const totalPages = ids ? Math.ceil(ids.length / POST_PAGE_SIZE) : 0;
+      if (otherPosts && row && totalPages === 0 && page === 1) {
+        return Response.json({ posts: [], page, totalPages }, { headers: publicHeaders });
+      }
       if (!row || page > totalPages) {
         return Response.json({ error: 'Profile not found.' }, { status: 404, headers: privateHeaders });
       }
       const offset = (page - 1) * POST_PAGE_SIZE;
-      const postIds = row.postIds.slice(offset, offset + POST_PAGE_SIZE);
-      const payload = await cached(cache, cacheKey + `profile/${snapshot.version}/${id}/${page}`,
+      const postIds = ids.slice(offset, offset + POST_PAGE_SIZE);
+      const payload = await cached(cache, cacheKey + `${view}/${snapshot.version}/${id}/${page}`,
         () => readProfilePage(env.DB, id, postIds));
-      return payload.visible
-        ? Response.json({ ...creatorSummary(row), posts: payload.posts, offset, page, totalPages }, { headers: publicHeaders })
-        : Response.json({ error: 'Profile not found.' }, { status: 404, headers: privateHeaders });
+      if (!payload.visible) return Response.json({ error: 'Profile not found.' }, { status: 404, headers: privateHeaders });
+      if (otherPosts) {
+        const posts = payload.posts.map(post => ({ ...post, score: postScore(row.author, post.metrics) }));
+        return Response.json({ posts, page, totalPages }, { headers: publicHeaders });
+      }
+      return Response.json({ ...creatorSummary(row), posts: payload.posts, offset, page, totalPages }, { headers: publicHeaders });
     } catch (error) {
       if (error instanceof ModerationError) return Response.json({ error: error.message }, { status: error.status, headers: privateHeaders });
       return Response.json({ error: 'Leaderboard temporarily unavailable.' }, { status: 503, headers: { 'Cache-Control': 'no-store' } });

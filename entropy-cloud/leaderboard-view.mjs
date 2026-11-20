@@ -44,6 +44,11 @@ export function creatorScore({ views, likes, reposts, quotes, followers, smartFo
   return Math.round(10 * score) / 10;
 }
 
+export function postScore(author, { impressions, likes, reposts, quotes }) {
+  return creatorScore({ views: impressions, likes, reposts, quotes, followers: author.followers,
+    smartFollowers: author.twitterScore?.smartFollowers, postCount: 1 });
+}
+
 export function summarize(dataset) {
   const groups = new Map();
   for (const post of dataset.posts) {
@@ -61,8 +66,7 @@ export function summarize(dataset) {
       ? (likes + reposts + quotes) / views * 100 : null;
     let topPost = null;
     for (const { id, metrics } of posts) {
-      const score = creatorScore({ views: metrics.impressions, likes: metrics.likes, reposts: metrics.reposts,
-        quotes: metrics.quotes, followers: author.followers, smartFollowers: author.twitterScore?.smartFollowers, postCount: 1 });
+      const score = postScore(author, metrics);
       if (score !== null && (topPost === null || score > topPost.score)) topPost = { id, score };
     }
     return {

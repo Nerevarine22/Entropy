@@ -189,7 +189,7 @@
     $('map-count').textContent = top.length ? `Top ${top.length} by views` : '';
   }
 
-  function renderPost(post, index) {
+  function renderPostText(post, fullId) {
     const text = (post.body || post.summary || 'Post text unavailable.').replace(/\r\n/g, '\n').trim();
     const firstLines = text.split('\n', 7).slice(0, 6).join('\n');
     const characters = Array.from(firstLines);
@@ -199,14 +199,26 @@
       const boundary = preview.search(/\s+\S*$/u);
       if (boundary > 240) preview = preview.slice(0, boundary);
     }
-    const fullId = `profile-post-text-${index}`;
-    const copy = truncated
+    return truncated
       ? `<p class="post-preview">${esc(preview.trimEnd())}…</p>
          <p id="${fullId}" class="post-full" hidden>${esc(text)}</p>
          <button type="button" class="post-toggle" aria-controls="${fullId}" aria-expanded="false">Show more</button>`
       : `<p>${esc(text)}</p>`;
+  }
+
+  function togglePostText(button) {
+    const full = $(button.getAttribute('aria-controls'));
+    const preview = button.closest('article').querySelector('.post-preview');
+    const expand = full.hidden;
+    full.hidden = !expand;
+    preview.hidden = expand;
+    button.setAttribute('aria-expanded', String(expand));
+    button.textContent = expand ? 'Show less' : 'Show more';
+  }
+
+  function renderPost(post, index) {
     return `<article class="profile-post">
-      ${copy}
+      ${renderPostText(post, `profile-post-text-${index}`)}
       <div class="profile-post-meta">
         <a href="${esc(post.url)}" target="_blank" rel="noopener noreferrer">VIEW POST ↗</a>
         <time datetime="${esc(post.date)}">${esc(post.date)}</time>
@@ -396,65 +408,213 @@
     }
   }
 
-  let myStatsRequest;
+  let myStatsRequest, myStatsPostsRequest, rankHistoryObserver;
+  const myStatsStorageKey = 'entropy.myStats.handle';
+  const xHandle = /^[A-Za-z0-9_]{1,15}$/;
   const statsCount = value => value == null ? '—' : format(value);
+  const rankNumber = rank => `#${format(rank)}`;
 
   function rankTrend(row) {
-    if (row.rankChange === null) return row.newRank ? '<span class="stats-trend up">New on the leaderboard</span>' : '';
-    if (!row.rankChange) return '<span class="stats-trend">Unchanged since yesterday</span>';
+    if (row.newRank) return '<span class="stats-trend up">New</span>';
+    if (row.rank === null && row.previousRank != null) return '<span class="stats-trend down">Out of ranking</span>';
+    if (!Number.isInteger(row.rankChange)) return '';
+    if (row.rankChange === 0) return '<span class="stats-trend">Unchanged</span>';
     const up = row.rankChange > 0;
-    return `<span class="stats-trend ${up ? 'up' : 'down'}"><span aria-hidden="true">${up ? '↗' : '↘'}</span> ${up ? 'Up' : 'Down'} ${format(Math.abs(row.rankChange))} since yesterday</span>`;
+    return `<span class="stats-trend ${up ? 'up' : 'down'}"><span aria-hidden="true">${up ? '↑' : '↓'}</span> ${up ? 'Up' : 'Down'} ${format(Math.abs(row.rankChange))}</span>`;
+  }
+
+  function yesterdayRank(row) {
+    if (row.previousRank != null) return rankNumber(row.previousRank);
+    return row.hasPreviousSnapshot ? 'Unranked' : 'No data';
+  }
+
+  function renderRankHistory(history) {
+    const ranked = history.filter(({ rank }) => Number.isSafeInteger(rank));
+    const summary = ranked.map(({ day, rank }) => `${reviewDate(day)} ${rankNumber(rank)}`).join(', ');
+    return `<figure class="stats-rank-history${ranked.length < 2 ? ' stats-history-empty' : ''}">
+      <figcaption><strong>Rank history</strong><span>7 days · UTC</span></figcaption>
+      ${ranked.length >= 2 ? `<canvas id="stats-rank-chart" role="img" aria-label="${esc(summary)}" title="${esc(summary)}"></canvas>
+        <div class="stats-chart-axis" aria-hidden="true"><span>${esc(reviewDate(history[0].day))}</span><span>Today</span></div>`
+        : '<p>Rank history appears once two days of rankings are available.</p>'}
+    </figure>`;
+  }
+
+  function watchRankChart(history) {
+    const canvas = $('stats-rank-chart');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const ranks = history.map(({ rank }) => rank).filter(Number.isSafeInteger);
+    const best = Math.min(...ranks), worst = Math.max(...ranks);
+    const step = Math.max(1, Math.ceil((worst - best) / 2));
+    const top = Math.max(1, best - step), bottom = worst + step + 1;
+
+    rankHistoryObserver = new ResizeObserver(() => {
+      const { clientWidth: width, clientHeight: height } = canvas;
+      if (!width || !height) return;
+      const pixelRatio = window.devicePixelRatio || 1;
+      canvas.width = Math.round(width * pixelRatio);
+      canvas.height = Math.round(height * pixelRatio);
+      ctx.scale(pixelRatio, pixelRatio);
+      const left = 49, right = width - 7;
+      const x = i => left + (right - left) * i / (history.length - 1);
+      const y = rank => 11 + (height - 22) * (rank - top) / (bottom - top);
+      ctx.font = '10px monospace';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#a3b7aa';
+      ctx.strokeStyle = '#a8d6ba24';
+      for (const rank of [top, Math.round((top + bottom) / 2), bottom]) {
+        ctx.fillText(rankNumber(rank), 0, y(rank), left - 5);
+        ctx.beginPath();
+        ctx.moveTo(left, y(rank));
+        ctx.lineTo(right, y(rank));
+        ctx.stroke();
+      }
+      ctx.beginPath();
+      ctx.strokeStyle = '#b3f6cb';
+      ctx.lineWidth = 2;
+      let consecutive = false;
+      history.forEach(({ rank }, i) => {
+        if (rank === null) { consecutive = false; return; }
+        if (consecutive) ctx.lineTo(x(i), y(rank)); else ctx.moveTo(x(i), y(rank));
+        consecutive = true;
+      });
+      ctx.stroke();
+      history.forEach(({ rank }, i) => {
+        if (rank === null) return;
+        ctx.beginPath();
+        ctx.fillStyle = i === history.length - 1 ? '#d5ffdf' : '#a5dfb9';
+        ctx.arc(x(i), y(rank), i === history.length - 1 ? 4 : 2.5, 0, Math.PI * 2);
+        ctx.fill();
+      });
+    });
+    rankHistoryObserver.observe(canvas);
+  }
+
+  function renderStatsPost(post, top = false) {
+    const text = renderPostText(post, `stats-post-text-${esc(post.id)}`);
+    const metrics = `<div class="stats-post-metrics">
+        <dl><div><dt>Post score</dt><dd>${post.score == null ? '—' : formatScore.format(post.score)}</dd></div>
+          <div><dt>Views</dt><dd>${statsCount(post.metrics.impressions)}</dd></div></dl>
+        ${top ? '' : `<a href="${esc(post.url)}" target="_blank" rel="noopener noreferrer">View on X <span aria-hidden="true">↗</span></a>`}
+      </div>`;
+    return `<article class="${top ? 'my-stats-top' : 'profile-post'}">${top ? metrics + text : text + metrics}</article>`;
   }
 
   function renderMyStats(account, stats) {
-    const { overall, weeks, smartFollowers, topPost } = stats;
-    const rank = row => row.rank === null ? 'Unranked' : `#${format(row.rank)}`;
+    const { overall, weeks, smartFollowers, topPost, rankHistory = [] } = stats;
+    const otherPosts = overall.postCount - Number(Boolean(topPost));
+    const podium = overall.rank !== null && overall.rank <= 3;
+    const rankStyle = overall.rank === null ? 'stats-unranked' : podium ? `rank-podium rank-podium-${overall.rank} stats-podium` : '';
     const away = '<span aria-hidden="true">↗</span>';
+    const weekBadges = weeks.filter(week => week.postCount > 0)
+      .map(week => `<span class="stats-week-badge" title="${esc(week.label)} participant">${esc(week.label)}</span>`).join('');
     $('my-stats-content').innerHTML = `
-      <div class="profile-hero my-stats-identity">
-        ${avatar(account)}
-        <div><h2>${esc(account.displayName)}</h2>
-          <a href="https://x.com/${esc(account.handle)}" target="_blank" rel="noopener noreferrer">@${esc(account.handle)} ${away}</a>
-        </div>
-      </div>
-      <div class="my-stats-metrics">
-        <div><span class="overview-label">Overall rank</span><strong>${rank(overall)}</strong>${rankTrend(overall)}</div>
-        <div><span class="overview-label">Creator Score</span><strong>${overall.score === null ? '—' : formatScore.format(overall.score)}</strong></div>
-        <div><span class="overview-label">Total views</span><strong>${statsCount(overall.views)}</strong></div>
-        <div><span class="overview-label">Smart Followers</span><strong>${statsCount(smartFollowers)}</strong></div>
-      </div>
-      ${overall.postCount === 0 ? '<p class="my-stats-muted">No posts count toward your overall ranking yet.</p>' : ''}
-      <div class="my-stats-details">
-        <section aria-labelledby="my-stats-weekly-heading">
-          <h2 id="my-stats-weekly-heading">Weekly rankings</h2>
-          ${weeks.length ? `<ul class="my-stats-weeks">${weeks.map(week => `<li>
-            <div><strong>${esc(week.label)}</strong><span>${format(week.postCount)} qualifying ${week.postCount === 1 ? 'post' : 'posts'}</span></div>
-            <div class="weekly-rank"><strong>${rank(week)}</strong>${rankTrend(week)}</div>
-          </li>`).join('')}</ul>` : '<p class="my-stats-muted">No campaign weeks yet.</p>'}
-        </section>
-        <section aria-labelledby="my-stats-top-heading">
-          <h2 id="my-stats-top-heading">Top-scoring post</h2>
-          ${topPost ? `<article class="profile-post my-stats-top">
-            <p>${esc(topPost.body?.trim().slice(0, 600) || 'Post text unavailable.')}</p>
-            <div class="profile-post-meta">
-              <a href="${esc(topPost.url)}" target="_blank" rel="noopener noreferrer">View post ${away}</a>
-              <span>${formatScore.format(topPost.score)} single-post score</span>
-              <span>${statsCount(topPost.metrics.impressions)} views</span>
+      <section class="my-stats-panel stats-rank-card" aria-labelledby="my-stats-overall-heading">
+        <div class="stats-rank-summary">
+          <div class="profile-hero my-stats-identity">
+            ${avatar(account)}
+            <div><div class="creator-name-line"><strong>${esc(account.displayName)}</strong>${overall.early ? earlyBadge : ''}${weekBadges}</div>
+              <a href="https://x.com/${esc(account.handle)}" target="_blank" rel="noopener noreferrer">@${esc(account.handle)} ${away}</a>
             </div>
-          </article>` : '<p class="my-stats-muted">No scored posts yet.</p>'}
+          </div>
+          <div class="stats-overall-position">
+            <h2 id="my-stats-overall-heading">Overall rank</h2>
+            <div class="stats-rank-line">
+              <strong class="${rankStyle}">${overall.rank === null ? 'Unranked' : `<span aria-hidden="true">#</span>${format(overall.rank)}`}</strong>
+              ${rankTrend(overall)}
+            </div>
+            <p class="stats-comparison">Yesterday (UTC) <span>${yesterdayRank(overall)}</span></p>
+          </div>
+        </div>
+        ${renderRankHistory(rankHistory)}
+      </section>
+      <dl class="my-stats-panel my-stats-metrics">
+        <div><dt>Creator Score</dt><dd>${overall.score === null ? '—' : formatScore.format(overall.score)}</dd></div>
+        <div><dt>Total views</dt><dd>${statsCount(overall.views)}</dd></div>
+        <div><dt>Smart Followers</dt><dd>${statsCount(smartFollowers)}</dd></div>
+      </dl>
+      <div class="my-stats-details">
+        <section class="my-stats-panel" aria-labelledby="my-stats-weekly-heading">
+          <div class="stats-panel-heading"><h2 id="my-stats-weekly-heading">Weekly rankings</h2></div>
+          ${weeks.length ? `<table class="my-stats-weeks">
+            <thead><tr><th scope="col">Campaign</th><th scope="col">Rank</th><th scope="col">Vs. yesterday</th></tr></thead>
+            <tbody>${weeks.map(week => `<tr>
+              <th scope="row"><strong>${esc(week.label)}</strong><span>${format(week.postCount)} qualifying ${week.postCount === 1 ? 'post' : 'posts'}</span></th>
+              <td>${week.rank === null ? '<span class="my-stats-muted">Unranked</span>' : week.rank <= 3
+                ? `<span class="rank rank-podium rank-podium-${week.rank}">${week.rank}</span>` : rankNumber(week.rank)}</td>
+              <td title="Yesterday (UTC) · ${yesterdayRank(week)}">${rankTrend(week) || `<span class="my-stats-muted" aria-label="${yesterdayRank(week)}">—</span>`}</td>
+            </tr>`).join('')}</tbody>
+          </table>` : '<p class="stats-panel-empty">No campaign weeks yet.</p>'}
+        </section>
+        <section class="my-stats-panel" aria-labelledby="my-stats-top-heading">
+          <div class="stats-panel-heading"><h2 id="my-stats-top-heading">Top-scoring post</h2>
+            ${topPost ? `<a href="${esc(topPost.url)}" target="_blank" rel="noopener noreferrer">View on X ${away}</a>` : ''}
+          </div>
+          ${topPost ? renderStatsPost(topPost, true) : '<p class="stats-panel-empty">No scored posts yet.</p>'}
+          ${otherPosts > 0 ? `<details class="stats-posts-disclosure" data-stats-author="${esc(account.id)}" data-next-page="1">
+            <summary>${topPost ? 'Other posts' : 'Indexed posts'} <span>${format(otherPosts)}</span></summary>
+            <div class="stats-posts-body">
+              <div class="profile-posts stats-posts-list" role="region" aria-label="Creator posts" tabindex="0"></div>
+              <p class="my-stats-feedback stats-posts-status" role="status"></p>
+              <button type="button" class="admin-button stats-posts-more" hidden>Load more posts</button>
+            </div>
+          </details>` : ''}
         </section>
       </div>`;
   }
 
-  async function loadMyStats(event) {
-    event.preventDefault();
+  async function loadMyStatsPosts(details) {
+    if (myStatsPostsRequest || !details.open) return;
+    const request = myStatsPostsRequest = new AbortController();
+    const list = details.querySelector('.stats-posts-list');
+    const status = details.querySelector('.stats-posts-status');
+    const more = details.querySelector('.stats-posts-more');
+    const page = Number(details.dataset.nextPage);
+    status.textContent = 'Loading posts…';
+    more.disabled = true;
+    try {
+      const result = await getData({ view: 'posts', creator: details.dataset.statsAuthor, page }, request.signal);
+      if (request.signal.aborted) return;
+      list.insertAdjacentHTML('beforeend', result.posts.map(post => renderStatsPost(post)).join(''));
+      details.dataset.nextPage = String(result.page + 1);
+      status.textContent = page === 1 && !result.posts.length ? 'No other indexed posts.' : '';
+      more.textContent = 'Load more posts';
+      more.hidden = result.page >= result.totalPages;
+    } catch {
+      if (request.signal.aborted) return;
+      status.textContent = 'Could not load posts.';
+      more.textContent = 'Try again';
+      more.hidden = false;
+    } finally {
+      more.disabled = false;
+      if (myStatsPostsRequest === request) myStatsPostsRequest = null;
+    }
+  }
+
+  function restoreMyStats() {
+    const input = $('my-stats-handle');
+    if (!input.value) {
+      try {
+        const saved = localStorage.getItem(myStatsStorageKey);
+        if (saved && xHandle.test(saved)) input.value = saved;
+      } catch { /* Storage can be disabled by the browser. */ }
+    }
+    if (input.value && $('my-stats-content').hidden && $('my-stats-feedback').hidden) loadMyStats();
+  }
+
+  async function loadMyStats() {
     myStatsRequest?.abort();
-    const handle = $('my-stats-handle').value.trim().replace(/^@/, '');
+    myStatsPostsRequest?.abort();
+    myStatsPostsRequest = null;
+    rankHistoryObserver?.disconnect();
+    const input = $('my-stats-handle');
+    const handle = input.value.trim().replace(/^@/, '');
     const feedback = $('my-stats-feedback');
     const content = $('my-stats-content');
     content.hidden = true;
     feedback.hidden = false;
-    if (!/^[A-Za-z0-9_]{1,15}$/.test(handle)) {
+    if (!xHandle.test(handle)) {
       feedback.textContent = 'Enter a valid X username.';
       return;
     }
@@ -464,7 +624,11 @@
       const data = await getData({ view: 'stats', q: handle }, request.signal);
       if (request.signal.aborted) return;
       renderMyStats(data.account, data.stats);
+      if (input.value.trim().replace(/^@/, '').toLowerCase() === handle.toLowerCase()) input.value = data.account.handle;
+      try { localStorage.setItem(myStatsStorageKey, data.account.handle); }
+      catch { /* Searching still works without storage. */ }
       content.hidden = false;
+      watchRankChart(data.stats.rankHistory ?? []);
       feedback.textContent = '';
       feedback.hidden = true;
     } catch (error) {
@@ -490,7 +654,8 @@
     $('board-title').textContent = admin ? 'Moderation' : campaign ? 'Weekly leaderboard' : 'Leaderboard';
     if (key === 'weekly-review') loadWeeklyReview();
     else weeklyRequest?.abort();
-    if (key !== 'my-stats' && myStatsRequest) {
+    if (key === 'my-stats') restoreMyStats();
+    else if (myStatsRequest) {
       myStatsRequest.abort();
       $('my-stats-feedback').hidden = true;
     }
@@ -526,15 +691,7 @@
       return;
     }
     const button = event.target.closest('.post-toggle');
-    if (!button) return;
-
-    const full = $(button.getAttribute('aria-controls'));
-    const preview = button.closest('.profile-post').querySelector('.post-preview');
-    const expand = full.hidden;
-    full.hidden = !expand;
-    preview.hidden = expand;
-    button.setAttribute('aria-expanded', String(expand));
-    button.textContent = expand ? 'Show less' : 'Show more';
+    if (button) togglePostText(button);
   });
   if (admin) {
     $('weekly-week').addEventListener('change', () => loadWeeklyReview());
@@ -674,7 +831,20 @@
 
   if (statsEnabled) {
     $('my-stats-nav').hidden = false;
-    $('my-stats-form').addEventListener('submit', loadMyStats);
+    const content = $('my-stats-content');
+    content.addEventListener('toggle', event => {
+      const details = event.target;
+      if (details.matches('.stats-posts-disclosure') && details.open && details.dataset.nextPage === '1') loadMyStatsPosts(details);
+    }, true);
+    content.addEventListener('click', event => {
+      const button = event.target.closest('button');
+      if (button?.classList.contains('post-toggle')) togglePostText(button);
+      if (button?.classList.contains('stats-posts-more')) loadMyStatsPosts(button.closest('details'));
+    });
+    $('my-stats-form').addEventListener('submit', event => {
+      event.preventDefault();
+      loadMyStats();
+    });
   }
   if (admin) initAdmin();
   else showPage();
