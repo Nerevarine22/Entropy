@@ -2,6 +2,7 @@
   'use strict';
   const $ = id => document.getElementById(id);
   const admin = /^\/admin\/?$/.test(location.pathname);
+  const statsEnabled = !admin;
   const source = admin ? '/api/admin' : document.currentScript.dataset.source;
   async function getData(params, signal, action) {
     const url = new URL(source, location.origin);
@@ -395,10 +396,113 @@
     }
   }
 
+  let myStatsRequest;
+  const statsCount = value => value == null ? '—' : format(value);
+
+  function rankTrend(row) {
+    if (row.rankChange === null) return row.newRank ? '<span class="stats-trend up">New on the leaderboard</span>' : '';
+    if (!row.rankChange) return '<span class="stats-trend">Unchanged since yesterday</span>';
+    const up = row.rankChange > 0;
+    return `<span class="stats-trend ${up ? 'up' : 'down'}"><span aria-hidden="true">${up ? '↗' : '↘'}</span> ${up ? 'Up' : 'Down'} ${format(Math.abs(row.rankChange))} since yesterday</span>`;
+  }
+
+  function renderMyStats(account, stats) {
+    const { overall, weeks, smartFollowers, topPost } = stats;
+    const rank = row => row.rank === null ? 'Unranked' : `#${format(row.rank)}`;
+    const away = '<span aria-hidden="true">↗</span>';
+    $('my-stats-content').innerHTML = `
+      <div class="profile-hero my-stats-identity">
+        ${avatar(account)}
+        <div><h2>${esc(account.displayName)}</h2>
+          <a href="https://x.com/${esc(account.handle)}" target="_blank" rel="noopener noreferrer">@${esc(account.handle)} ${away}</a>
+        </div>
+      </div>
+      <div class="my-stats-metrics">
+        <div><span class="overview-label">Overall rank</span><strong>${rank(overall)}</strong>${rankTrend(overall)}</div>
+        <div><span class="overview-label">Creator Score</span><strong>${overall.score === null ? '—' : formatScore.format(overall.score)}</strong></div>
+        <div><span class="overview-label">Total views</span><strong>${statsCount(overall.views)}</strong></div>
+        <div><span class="overview-label">Smart Followers</span><strong>${statsCount(smartFollowers)}</strong></div>
+      </div>
+      ${overall.postCount === 0 ? '<p class="my-stats-muted">No posts count toward your overall ranking yet.</p>' : ''}
+      <div class="my-stats-details">
+        <section aria-labelledby="my-stats-weekly-heading">
+          <h2 id="my-stats-weekly-heading">Weekly rankings</h2>
+          ${weeks.length ? `<ul class="my-stats-weeks">${weeks.map(week => `<li>
+            <div><strong>${esc(week.label)}</strong><span>${format(week.postCount)} qualifying ${week.postCount === 1 ? 'post' : 'posts'}</span></div>
+            <div class="weekly-rank"><strong>${rank(week)}</strong>${rankTrend(week)}</div>
+          </li>`).join('')}</ul>` : '<p class="my-stats-muted">No campaign weeks yet.</p>'}
+        </section>
+        <section aria-labelledby="my-stats-top-heading">
+          <h2 id="my-stats-top-heading">Top-scoring post</h2>
+          ${topPost ? `<article class="profile-post my-stats-top">
+            <p>${esc(topPost.body?.trim().slice(0, 600) || 'Post text unavailable.')}</p>
+            <div class="profile-post-meta">
+              <a href="${esc(topPost.url)}" target="_blank" rel="noopener noreferrer">View post ${away}</a>
+              <span>${formatScore.format(topPost.score)} single-post score</span>
+              <span>${statsCount(topPost.metrics.impressions)} views</span>
+            </div>
+          </article>` : '<p class="my-stats-muted">No scored posts yet.</p>'}
+        </section>
+      </div>`;
+  }
+
+  async function loadMyStats() {
+    myStatsRequest?.abort();
+    const request = myStatsRequest = new AbortController();
+    const feedback = $('my-stats-feedback');
+    const messages = { failed: 'X sign-in could not be completed. Try again.', cancelled: 'X sign-in was cancelled.',
+      unavailable: 'X sign-in is not available.' };
+    const url = new URL(location.href);
+    const authMessage = messages[url.searchParams.get('x_login')];
+    if (url.searchParams.has('x_login')) {
+      url.searchParams.delete('x_login');
+      history.replaceState(null, '', url);
+    }
+    feedback.hidden = false;
+    feedback.textContent = 'Loading your stats…';
+    $('my-stats-sign-in').hidden = true;
+    $('my-stats-content').hidden = true;
+    $('my-stats-sign-out').hidden = true;
+    try {
+      const response = await fetch('/api/my-stats', { signal: AbortSignal.any([request.signal, AbortSignal.timeout(12000)]) });
+      const data = await response.json();
+      if (request.signal.aborted) return;
+      $('my-stats-sign-out').hidden = !data.account;
+      if (!response.ok) throw new Error(data.error);
+      feedback.textContent = typeof authMessage === 'string' ? authMessage : '';
+      feedback.hidden = !feedback.textContent;
+      if (data.account) {
+        renderMyStats(data.account, data.stats);
+        $('my-stats-content').hidden = false;
+      } else {
+        $('my-stats-connect').hidden = !data.configured;
+        $('my-stats-config').hidden = data.configured;
+        $('my-stats-sign-in').hidden = false;
+      }
+    } catch {
+      if (!request.signal.aborted) feedback.textContent = 'Your stats are temporarily unavailable. Try reloading this page.';
+    }
+  }
+
+  async function signOutMyStats() {
+    const button = $('my-stats-sign-out');
+    button.disabled = true;
+    try {
+      const response = await fetch('/api/my-stats/logout', { method: 'POST', signal: AbortSignal.timeout(12000) });
+      if (!response.ok) throw new Error('Sign-out failed.');
+      $('my-stats-content').replaceChildren();
+      if (location.hash === '#my-stats') await loadMyStats();
+    } catch {
+      const feedback = $('my-stats-feedback');
+      feedback.textContent = 'Could not sign out. Try again.';
+      feedback.hidden = false;
+    } finally { button.disabled = false; }
+  }
+
   function showPage() {
     const hash = location.hash.slice(1);
     const key = admin ? (adminSignedIn ? (hash === 'weekly-review' ? hash : 'leaderboard') : '')
-      : ['leaderboard', 'campaign', 'methodology', 'about'].includes(hash) ? hash : 'leaderboard';
+      : ['leaderboard', 'campaign', 'methodology', 'about'].includes(hash) || (statsEnabled && hash === 'my-stats') ? hash : 'leaderboard';
     const campaign = key === 'campaign';
     const board = campaign || key === 'leaderboard';
     document.querySelectorAll('.page').forEach(el => { el.hidden = el.id !== 'page-' + (campaign ? 'leaderboard' : key); });
@@ -410,6 +514,8 @@
     $('board-title').textContent = admin ? 'Moderation' : campaign ? 'Weekly leaderboard' : 'Leaderboard';
     if (key === 'weekly-review') loadWeeklyReview();
     else weeklyRequest?.abort();
+    if (key === 'my-stats') loadMyStats();
+    else myStatsRequest?.abort();
     if (!board) {
       boardRequest?.abort();
       boardMode = null;
@@ -588,6 +694,10 @@
     } catch (error) { showAdminSignIn(error.message); }
   }
 
+  if (statsEnabled) {
+    $('my-stats-nav').hidden = false;
+    $('my-stats-sign-out').addEventListener('click', signOutMyStats);
+  }
   if (admin) initAdmin();
   else showPage();
 })();

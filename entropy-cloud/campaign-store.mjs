@@ -46,7 +46,7 @@ export async function selectCampaign(db, id) {
   const week = id === null ? results[0] : results.find(item => item.id === id);
   if (id !== null && !week) throw new ModerationError(404, 'Campaign week not found.');
   const publicWeek = ({ rubricId, revision, ...view }) => view;
-  return { week, view: { weeks: results.map(publicWeek), week: week ? publicWeek(week) : null } };
+  return { week, weeks: results, view: { weeks: results.map(publicWeek), week: week ? publicWeek(week) : null } };
 }
 
 export async function campaignEntries(db, week, posts) {

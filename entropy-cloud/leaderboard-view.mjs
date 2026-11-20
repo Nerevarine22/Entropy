@@ -59,11 +59,17 @@ export function summarize(dataset) {
     const quotes = total(posts, 'quotes');
     const engagement = views > 0 && [likes, reposts, quotes].every(value => value !== null)
       ? (likes + reposts + quotes) / views * 100 : null;
+    let topPost = null;
+    for (const { id, metrics } of posts) {
+      const score = creatorScore({ views: metrics.impressions, likes: metrics.likes, reposts: metrics.reposts,
+        quotes: metrics.quotes, followers: author.followers, smartFollowers: author.twitterScore?.smartFollowers, postCount: 1 });
+      if (score !== null && (topPost === null || score > topPost.score)) topPost = { id, score };
+    }
     return {
       author, views, likes, engagement, postCount: posts.length,
       score: creatorScore({ views, likes, reposts, quotes, followers: author.followers,
         smartFollowers: author.twitterScore?.smartFollowers, postCount: posts.length }),
-      early: posts.some(Model.isEarlyCreatorPost), postIds: posts.map(post => post.id),
+      early: posts.some(Model.isEarlyCreatorPost), postIds: posts.map(post => post.id), topPost,
     };
   }).filter(row => row.postCount > 0)
     .sort((a, b) => (b.score ?? -1) - (a.score ?? -1) || byViews(a, b));
@@ -75,7 +81,7 @@ export function summarize(dataset) {
   };
 }
 
-export function creatorSummary({ postIds, author, ...row }) {
+export function creatorSummary({ postIds, topPost, author, ...row }) {
   const { followers, ...publicAuthor } = author;
   return { ...row, author: publicAuthor };
 }

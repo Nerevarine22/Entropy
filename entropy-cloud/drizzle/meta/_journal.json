@@ -43,6 +43,13 @@
       "when": 1795167718599,
       "tag": "0005_campaign_read_budget",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1795173484637,
+      "tag": "0006_daily_ranks",
+      "breakpoints": true
     }
   ]
 }

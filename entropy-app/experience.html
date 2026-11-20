@@ -17,6 +17,7 @@
       <nav id="public-navigation" class="navigation" aria-label="Main navigation">
         <a href="#leaderboard" data-page="leaderboard">Leaderboard</a>
         <a href="#campaign" data-page="campaign">Campaign</a>
+        <a id="my-stats-nav" href="#my-stats" data-page="my-stats" hidden>My Stats</a>
         <a href="#methodology" data-page="methodology">Methodology</a>
         <a href="#about" data-page="about">About</a>
       </nav>
@@ -131,6 +132,19 @@
           <button id="weekly-next" class="admin-button" type="button">Next</button>
         </nav>
       </div>
+    </section>
+    <section class="page my-stats" id="page-my-stats" aria-labelledby="my-stats-heading" hidden>
+      <div class="section-top">
+        <h1 id="my-stats-heading">My Stats<span class="heading-dot">.</span></h1>
+        <button id="my-stats-sign-out" class="admin-button" type="button" hidden>Sign out</button>
+      </div>
+      <p id="my-stats-feedback" class="my-stats-feedback" role="status" hidden></p>
+      <div id="my-stats-sign-in" class="my-stats-access" hidden>
+        <p>Connect your X account to see your creator stats.</p>
+        <a id="my-stats-connect" class="admin-button admin-button-primary" href="/api/my-stats/start" hidden>Connect X <span aria-hidden="true">↗</span></a>
+        <p id="my-stats-config" class="my-stats-muted" hidden>X sign-in isn’t configured yet.</p>
+      </div>
+      <div id="my-stats-content" hidden></div>
     </section>
     <section class="page info-page" id="page-methodology" hidden>
       <div class="eyebrow"><span class="status-dot"></span> BEHIND THE NUMBERS</div>

@@ -5,6 +5,7 @@ import { collectSmartFollowers } from './leaderboard-smart-followers.mjs';
 import { currentControl, ModerationError, rankingReviews, storedRecords } from './moderation-store.mjs';
 import { campaignEntries, campaignReviewPage, selectCampaign } from './campaign-store.mjs';
 import { collectCampaignDecisions } from './campaign-ingestion.mjs';
+import { hasStatsServiceAccess, overallKey, personalRank, storeDailyRanks, yesterdayRanks } from './leaderboard-stats.mjs';
 
 const METRICS = ['impressions', 'likes', 'reposts', 'quotes', 'replies'];
 const xId = value => typeof value === 'string' && /^[1-9]\d*$/.test(value);
@@ -67,7 +68,7 @@ export function publicDataset(records, includeExcluded = false) {
 const publicHeaders = { 'Cache-Control': 'public, max-age=0, must-revalidate', 'X-Content-Type-Options': 'nosniff' };
 const privateHeaders = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' };
 const CACHE_SECONDS = 900;
-const CACHE_NAMESPACE = '/__entropy_cache/v4';
+const CACHE_NAMESPACE = '/__entropy_cache/v5';
 const cacheFills = new Map();
 
 async function cached(cache, key, build) {
@@ -154,18 +155,21 @@ async function loadCampaign(env, url, includeReview = false) {
   const { week, view } = await selectCampaign(db, url.searchParams.get('week'));
   if (!week) return { view, authors: [], entries: [], posts: [],
     snapshot: summarize({ meta: { asOf: null }, authors: [], posts: [] }) };
-  const control = await currentControl(db);
+  return { view, ...await campaignSnapshot(env, url, await currentControl(db), week, includeReview) };
+}
+
+async function campaignSnapshot(env, url, control, week, includeReview = false) {
+  const db = env.DB;
   const scope = includeReview ? 'review' : 'public';
   const cache = env.previewCache ?? globalThis.caches?.default;
   const key = `${url.origin}${CACHE_NAMESPACE}/campaign/${control.generation}/${control.revision}/${week.id}/${week.rubricId}/${week.revision}/${scope}`;
-  const data = await cached(cache, key, async () => {
+  return cached(cache, key, async () => {
     const dataset = await readDataset(db, true, control.generation, true, week);
     const entries = await campaignEntries(db, week, dataset.posts);
     if (includeReview) return { authors: dataset.authors, entries };
     const posts = entries.filter(entry => entry.status === 'match').map(({ post: { excluded, ...post } }) => post);
     return { posts, snapshot: summarize({ ...dataset, posts }) };
   });
-  return { view, ...data };
 }
 
 async function adminCampaign(env, url) {
@@ -216,6 +220,41 @@ async function readProfilePage(db, id, postIds) {
   return { posts: postIds.map(key => byId.get(key)).filter(Boolean), visible };
 }
 
+async function loadStatsBoards(env, url) {
+  const [control, { weeks: registered }] = await Promise.all([currentControl(env.DB), selectCampaign(env.DB, null)]);
+  const overall = await rankingSnapshot(env, url, control);
+  const weeks = [];
+  for (const week of registered) {
+    const { snapshot } = await campaignSnapshot(env, url, control, week);
+    weeks.push({ id: week.id, label: week.label, historyKey: `${week.id}/${week.rubricId}`, snapshot });
+  }
+  return { overall, weeks };
+}
+
+async function readTopPost(db, id, topPost) {
+  if (!topPost) return null;
+  const { posts, visible } = await readProfilePage(db, id, [topPost.id]);
+  const post = posts[0];
+  return visible && post?.authorId === id ? { ...post, score: topPost.score } : null;
+}
+
+export function captureDailyRanks(env, url, now = Date.now()) {
+  return storeDailyRanks(env.DB, () => loadStatsBoards(env, url), now);
+}
+
+export async function readMyStats(env, url, id, now = Date.now()) {
+  const [{ overall, weeks }, previous] = await Promise.all([loadStatsBoards(env, url), yesterdayRanks(env.DB, id, now)]);
+  const row = overall.rows.find(({ author }) => author.id === id);
+  const indexed = row ?? overall.adminRows.find(({ author }) => author.id === id);
+  return {
+    overall: { ...personalRank(row, previous.get(overallKey)), views: row?.views ?? null, score: row?.score ?? null },
+    weeks: weeks.map(week => ({ id: week.id, label: week.label,
+      ...personalRank(week.snapshot.rows.find(({ author }) => author.id === id), previous.get(week.historyKey)) })),
+    smartFollowers: indexed?.author.twitterScore?.smartFollowers ?? null,
+    topPost: await readTopPost(env.DB, id, row?.topPost),
+  };
+}
+
 export default {
   async scheduled(_controller, env) {
     let newPosts = false;
@@ -230,11 +269,27 @@ export default {
         if (job.status === 'rejected') console.error(names[index], 'failed');
         else if (['checked', 'classified', 'provider-error'].includes(job.value.status)) console.log(names[index], job.value);
       });
+      if (env.X_STATS_SERVICE_KEY) {
+        try {
+          if (await captureDailyRanks(env, new URL('https://entropy-rank-snapshots.internal'))) console.log('Saved daily leaderboard ranks');
+        } catch { console.error('Could not save daily leaderboard ranks'); }
+      }
     }
   },
 
   async fetch(request, env) {
     const url = new URL(request.url);
+    if (url.pathname === '/internal/my-stats') {
+      if (!hasStatsServiceAccess(request, env.X_STATS_SERVICE_KEY)) {
+        return Response.json({ error: 'Unauthorized.' }, { status: 401, headers: privateHeaders });
+      }
+      const id = url.searchParams.get('creator');
+      if (request.method !== 'GET' || !xId(id) || id.length > 24) {
+        return Response.json({ error: 'Invalid My Stats request.' }, { status: 400, headers: privateHeaders });
+      }
+      try { return Response.json(await readMyStats(env, url, id), { headers: privateHeaders }); }
+      catch { return Response.json({ error: 'My Stats is temporarily unavailable.' }, { status: 503, headers: privateHeaders }); }
+    }
     if (url.pathname === '/api/admin') return handleAdmin(request, env, target => adminRanking(env, target), target => adminCampaign(env, target));
     if (url.pathname !== '/api/leaderboard') return new Response('Not Found', { status: 404 });
     if (request.method !== 'GET') return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'GET' } });

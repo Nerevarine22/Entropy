@@ -306,3 +306,72 @@
   .admin-mode .brand { margin-right: 0; }
   .admin-mode .header-link { margin-left: auto; }
 }
+.my-stats {
+  max-width: 1060px;
+  min-height: 65vh;
+  margin: 0 auto;
+  padding: clamp(28px, 4.5vw, 60px) 0 72px;
+}
+.my-stats .section-top { align-items: center; margin-bottom: 20px; }
+.my-stats-access,
+.my-stats-metrics,
+.my-stats-weeks {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.my-stats-access { max-width: 520px; padding: 24px; }
+.my-stats-access > p:first-child { margin: 0 0 16px; }
+.my-stats-access .admin-button { display: inline-flex; gap: 14px; align-items: center; }
+.my-stats-muted,
+.my-stats-feedback { color: #a3aba5; line-height: 1.5; }
+.my-stats-access .my-stats-muted { margin: 0; }
+.my-stats-identity { padding: 10px 0 24px; }
+.my-stats-identity .avatar { flex: none; }
+.my-stats-identity h2 { overflow-wrap: anywhere; }
+.my-stats-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.my-stats-metrics > div {
+  min-height: 112px;
+  padding: 19px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+.my-stats-metrics > div + div { border-left: 1px solid var(--line); }
+.my-stats-metrics strong {
+  font: 500 clamp(20px, 2.7vw, 30px)/1.2 var(--mono);
+  overflow-wrap: anywhere;
+}
+.stats-trend { color: #a3aba5; font: 11px/1.4 var(--mono); }
+.stats-trend.up { color: var(--accent); }
+.stats-trend.down { color: #edafa7; }
+.my-stats-details {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr);
+  gap: 24px;
+  margin-top: 32px;
+}
+.my-stats-details h2 { margin: 0 0 14px; font-size: 19px; font-weight: 500; }
+.my-stats-weeks { padding: 0; margin: 0; list-style: none; }
+.my-stats-weeks li { display: flex; justify-content: space-between; align-items: center; gap: 18px; padding: 16px; }
+.my-stats-weeks li + li { border-top: 1px solid var(--line); }
+.my-stats-weeks li div > span { display: block; margin-top: 5px; color: #a3aba5; font-size: 12px; }
+.my-stats-weeks .weekly-rank { text-align: right; }
+.weekly-rank strong { font: 500 16px var(--mono); }
+.my-stats-weeks .weekly-rank .stats-trend.up { color: var(--accent); }
+.my-stats-weeks .weekly-rank .stats-trend.down { color: #edafa7; }
+.my-stats-top p {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.my-stats-top .profile-post-meta { flex-wrap: wrap; }
+@media (max-width: 700px) {
+  .my-stats-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .my-stats-metrics > div { min-height: 96px; padding: 14px; }
+  .my-stats-metrics > div:nth-child(3) { border-left: 0; }
+  .my-stats-metrics > div:nth-child(n + 3) { border-top: 1px solid var(--line); }
+  .my-stats-details { grid-template-columns: 1fr; margin-top: 27px; }
+}

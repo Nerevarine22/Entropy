@@ -93,3 +93,9 @@ export const entropyCampaignCollection = sqliteTable('entropy_campaign_collectio
   lastStatus: text('last_status'),
   lastAttemptAt: integer('last_attempt_at'),
 });
+
+export const entropyDailyRanks = sqliteTable('entropy_daily_ranks', {
+  day: text('day').notNull(),
+  board: text('board').notNull(),
+  ranks: text('ranks').notNull(),
+}, table => [primaryKey({ columns: [table.day, table.board] })]);
