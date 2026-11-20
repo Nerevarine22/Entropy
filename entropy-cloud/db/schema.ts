@@ -26,6 +26,9 @@ export const entropyRecords = sqliteTable('entropy_records', {
 }, table => [
   primaryKey({ columns: [table.generation, table.kind, table.recordId, table.chunkIndex] }),
   index('entropy_records_created_at_idx').on(table.createdAt),
+  index('entropy_records_campaign_date_idx')
+    .on(table.generation, sql`CASE WHEN json_valid(${table.payload}) THEN julianday(json_extract(${table.payload},'$.publishedAt')) ELSE -1 END`)
+    .where(sql`${table.kind}='post' AND ${table.chunkIndex}=0`),
 ]);
 
 export const entropyCreatorReviews = sqliteTable('entropy_creator_reviews', {
@@ -59,6 +62,7 @@ export const entropyCampaignWeeks = sqliteTable('entropy_campaign_weeks', {
   startsAt: text('starts_at').notNull(),
   endsAt: text('ends_at').notNull(),
   rubricId: text('rubric_id').notNull(),
+  revision: integer('revision').notNull().default(0),
 });
 
 export const entropyCampaignDecisions = sqliteTable('entropy_campaign_decisions', {

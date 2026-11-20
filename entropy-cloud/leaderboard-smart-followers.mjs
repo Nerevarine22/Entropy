@@ -12,13 +12,13 @@ const singleAuthor = `author.kind='author' AND author.chunk_index=0 AND json_val
     WHERE chunk.generation=author.generation AND chunk.kind='author'
       AND chunk.record_id=author.record_id AND chunk.chunk_index=1)`;
 
-const observations = `WITH observed AS (
+const observations = `WITH observed AS MATERIALIZED (
   SELECT json_extract(value,'$.id') AS id, json_extract(value,'$.count') AS count,
     json_extract(value,'$.checkedAt') AS checked_at FROM json_each(?)
 ), candidates AS (
   SELECT author.record_id AS id, observed.count, observed.checked_at, ${scoreCount} AS previous_count
-  FROM entropy_records AS author JOIN observed ON author.record_id=observed.id
-  WHERE author.generation=(SELECT generation FROM entropy_control WHERE ${writable})
+  FROM observed CROSS JOIN entropy_records AS author
+  WHERE author.record_id=observed.id AND author.generation=(SELECT generation FROM entropy_control WHERE ${writable})
     AND ${singleAuthor} AND coalesce(${scoreDate},'') < observed.checked_at
 )`;
 
@@ -33,7 +33,8 @@ export function smartFollowerWrites(results, generation, now) {
         '$.twitterScore.smartFollowers',coalesce(candidates.count,candidates.previous_count),
         '$.twitterScore.checkedAt',candidates.checked_at,
         '$.twitterScore.status',CASE WHEN candidates.count IS NULL THEN 'unavailable' ELSE 'observed' END)
-      FROM candidates WHERE generation=? AND kind='author' AND chunk_index=0 AND record_id=candidates.id`, [...args, generation]],
+      FROM candidates WHERE generation=? AND kind='author' AND chunk_index=0
+        AND record_id IN (SELECT id FROM observed) AND record_id=candidates.id`, [...args, generation]],
   ];
 }
 

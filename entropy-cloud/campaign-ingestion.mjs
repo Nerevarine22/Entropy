@@ -9,34 +9,40 @@ const DAY = 24 * 60 * MINUTE;
 const CATCH_UP = 7 * DAY;
 const LEASE = 4 * MINUTE;
 const IDLE_INTERVAL = 15 * MINUTE;
+// Matches the partial date index. Its -1 key identifies split JSON payloads.
+const indexedDate = "CASE WHEN json_valid(p.payload) THEN julianday(json_extract(p.payload,'$.publishedAt')) ELSE -1 END";
 export const configuredCampaigns = () => Promise.all(rubrics.map(identifyCampaign));
 
 export async function pendingCampaignPosts(db, { id, rubricId, rubric }, now, limit) {
   const { results } = await db.prepare(`
     WITH active AS (SELECT generation FROM entropy_control WHERE id='main'),
       indexed AS MATERIALIZED (
-        SELECT p.generation,p.record_id AS id,
-          CASE WHEN json_valid(p.payload) THEN p.payload ELSE (
+        SELECT p.generation,p.record_id AS id,p.payload
+        FROM entropy_records p JOIN active USING(generation)
+        WHERE p.kind='post' AND p.chunk_index=0
+          AND (${indexedDate})>=julianday(?1) AND (${indexedDate})<julianday(?2) AND (${indexedDate})<=julianday(?3)
+        UNION ALL
+        SELECT p.generation,p.record_id AS id,(
             SELECT group_concat(payload,'') FROM (
               SELECT c.payload FROM entropy_records c WHERE c.generation=p.generation
                 AND c.kind='post' AND c.record_id=p.record_id ORDER BY c.chunk_index
             )
-          ) END AS payload
+          ) AS payload
         FROM entropy_records p JOIN active USING(generation)
-        WHERE p.kind='post' AND p.chunk_index=0
+        WHERE p.kind='post' AND p.chunk_index=0 AND (${indexedDate})=-1
       ),
       candidates AS MATERIALIZED (
         SELECT generation,id,json_extract(payload,'$.authorId') AS author_id,
           json_extract(payload,'$.publishedAt') AS published_at,json_extract(payload,'$.date') AS post_date,
           CASE WHEN json_type(payload,'$.body')='text' THEN json_extract(payload,'$.body') ELSE '' END AS body
         FROM indexed WHERE json_valid(payload) AND json_type(payload,'$.isReply')='false'
-          AND julianday(json_extract(payload,'$.publishedAt'))>=julianday(?)
-          AND julianday(json_extract(payload,'$.publishedAt'))<julianday(?)
-          AND julianday(json_extract(payload,'$.publishedAt'))<=julianday(?)
+          AND julianday(json_extract(payload,'$.publishedAt'))>=julianday(?1)
+          AND julianday(json_extract(payload,'$.publishedAt'))<julianday(?2)
+          AND julianday(json_extract(payload,'$.publishedAt'))<=julianday(?3)
       ),
       pending AS MATERIALIZED (
         SELECT p.* FROM candidates p LEFT JOIN entropy_campaign_decisions d
-          ON d.week_id=? AND d.rubric_id=? AND d.post_id=p.id
+          ON d.week_id=?4 AND d.rubric_id=?5 AND d.post_id=p.id
         WHERE d.post_body IS NOT p.body
       )
     SELECT p.id,p.body FROM pending p
@@ -51,7 +57,7 @@ export async function pendingCampaignPosts(db, { id, rubricId, rubric }, now, li
       WHERE r.generation=p.generation AND r.kind='state:periodDecisions'
         AND r.record_id=substr(p.post_date,1,7)||'|'||p.author_id
     )
-    ORDER BY p.published_at,p.id LIMIT ?`
+    ORDER BY p.published_at,p.id LIMIT ?6`
   ).bind(rubric.from, rubric.until, new Date(now).toISOString(), id, rubricId, limit).all();
   return results;
 }

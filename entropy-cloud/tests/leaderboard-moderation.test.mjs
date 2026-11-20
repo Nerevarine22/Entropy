@@ -14,7 +14,8 @@ const generation = 'leaderboard-test';
 const date = '2026-09-01';
 const asOf = date + 'T12:00:00.000Z';
 const reason = 'Internal moderation example';
-const migrations = await Promise.all(['0000_aberrant_gamora.sql', '0001_creator_moderation.sql', '0003_campaign_weeks.sql', '0004_campaign_collection.sql']
+const migrations = await Promise.all(['0000_aberrant_gamora.sql', '0001_creator_moderation.sql', '0003_campaign_weeks.sql',
+  '0004_campaign_collection.sql', '0005_campaign_read_budget.sql']
   .map(name => readFile(new URL('../drizzle/' + name, import.meta.url), 'utf8')));
 
 function fixture(context) {
@@ -37,8 +38,14 @@ function fixture(context) {
   savePost('111', '11', 'Original @entropyIO post', 120);
   savePost('222', '22', 'Another @entropyIO post', 80);
   const cache = new Map();
+  let datasetReads = 0;
+  const binding = localD1Binding(db);
   const env = {
-    DB: localD1Binding(db), ENTROPY_ADMIN_SECRET: key, ENTROPY_ADMIN_ID: 'moderator',
+    DB: { ...binding, prepare(sql) {
+      if (sql.includes('WHEN kind LIKE')) datasetReads++;
+      return binding.prepare(sql);
+    } },
+    ENTROPY_ADMIN_SECRET: key, ENTROPY_ADMIN_ID: 'moderator',
     previewCache: {
       async match(url) { return cache.get(url)?.clone(); },
       async put(url, response) { cache.set(url, response.clone()); },
@@ -63,7 +70,7 @@ function fixture(context) {
     assert.match(issued, /HttpOnly; SameSite=Strict; Secure/);
     cookie = issued.split(';')[0];
   }
-  return { call, login, savePost, db };
+  return { call, login, savePost, db, datasetReads: () => datasetReads };
 }
 
 const data = async response => {
@@ -108,9 +115,9 @@ test('public and admin ranking order by score while the map orders by views', as
 });
 
 test('weekly reviews change only the selected campaign and edited posts require classification again', async context => {
-  const { call, login, db, savePost } = fixture(context);
+  const { call, login, db, savePost, datasetReads } = fixture(context);
   savePost('112','11','Another qualifying post', 35);
-  const addWeek = db.prepare('INSERT INTO entropy_campaign_weeks VALUES (?,?,?,?,?,?)');
+  const addWeek = db.prepare('INSERT INTO entropy_campaign_weeks (id,label,topic,starts_at,ends_at,rubric_id) VALUES (?,?,?,?,?,?)');
   addWeek.run('week-1','Week 1','Role guides','2026-09-01T00:00:00Z','2026-09-07T00:00:00Z','rules-1');
   addWeek.run('week-2','Week 2','Another topic','2026-09-07T00:00:00Z','2026-09-14T00:00:00Z','rules-2');
   const add = db.prepare(`INSERT INTO entropy_campaign_decisions
@@ -127,12 +134,16 @@ test('weekly reviews change only the selected campaign and edited posts require 
   const profile = await data(await call('/api/leaderboard?view=profile&week=week-1&creator=11'));
   assert.deepEqual(new Set(profile.posts.map(post => post.id)), new Set(['111','112']));
   assert.equal((await call('/api/leaderboard?view=profile&week=week-1&creator=22')).status,404);
+  await data(await call('/api/leaderboard?view=campaign&week=week-1&q=alice&page=2'));
+  assert.equal(datasetReads(),1);
   assert.equal((await call('/api/admin?view=weekly&week=week-1')).status,401);
 
   await login();
   const queue = await data(await call('/api/admin?view=weekly&week=week-1'));
   assert.deepEqual(queue.counts,{match:2,review:1,off_topic:0});
   assert.equal(queue.posts[0].post.id,'222');
+  await data(await call('/api/admin?view=weekly&week=week-1&status=match'));
+  assert.equal(datasetReads(),2);
   const action = {action:'campaign-review',week:'week-1',postId:'222',status:'match',revision:queue.posts[0].revision};
   await data(await call('/api/admin',{action}));
   assert.equal((await call('/api/admin',{action})).status,409);
@@ -160,12 +171,14 @@ test('campaign scheduler classifies new text, preserves decisions for metrics up
   assert.deepEqual(evaluated,['111']);
   assert.equal((await data(await call('/api/leaderboard?view=campaign'))).totals.posts,1);
   db.exec(`UPDATE entropy_records SET payload=json_set(payload,'$.metrics.impressions',220)
-    WHERE kind='post' AND record_id='111'`);
+    WHERE kind='post' AND record_id='111';
+    UPDATE entropy_control SET revision=revision+1 WHERE id='main'`);
   assert.deepEqual(await collectCampaignDecisions(env,{now:now+300000,evaluate}),{status:'idle',saved:0});
   assert.deepEqual(evaluated,['111']);
   assert.equal((await data(await call('/api/leaderboard?view=campaign'))).totals.views,220);
   db.exec(`UPDATE entropy_records SET payload=json_set(payload,'$.body','Changed body')
-    WHERE kind='post' AND record_id='111'`);
+    WHERE kind='post' AND record_id='111';
+    UPDATE entropy_control SET revision=revision+1 WHERE id='main'`);
   const failure = async () => { throw new CampaignModelError(429,600); };
   assert.equal((await collectCampaignDecisions(env,{now:now+600000,evaluate:failure})).status,'deferred');
   assert.deepEqual(await collectCampaignDecisions(env,{now:now+600000,evaluate:failure,newPosts:true}),
@@ -195,6 +208,23 @@ test('campaign scheduler respects bans, individual exclusions and month exclusio
   assert.deepEqual(await collectCampaignDecisions({DB:localD1Binding(db),TYPESAFE_API_KEY:'fixture'},{now,evaluate}),
     {status:'classified',saved:1});
   assert.deepEqual(evaluated,['104']);
+});
+
+test('the campaign date index still discovers split post records inside the week', async context => {
+  const { db } = fixture(context);
+  const now = Date.parse('2026-11-20T10:00:00Z');
+  const add = db.prepare("INSERT INTO entropy_records (generation,kind,record_id,chunk_index,payload,created_at) VALUES (?,'post','901',?,?,0)");
+  const entry = JSON.stringify({ id:'901',authorId:'11',publishedAt:'2026-11-19T10:00:00Z',
+    date:'2026-11-19',isReply:false,body:'Split post body' });
+  add.run(generation,0,entry.slice(0,26));
+  add.run(generation,1,entry.slice(26));
+  const evaluate = async post => {
+    assert.equal(post.id,'901');
+    assert.equal(post.body,'Split post body');
+    return {status:'match',choice:'match',confidence:0.95,model:'fixture-jev'};
+  };
+  assert.deepEqual(await collectCampaignDecisions({DB:localD1Binding(db),TYPESAFE_API_KEY:'fixture'},{now,evaluate}),
+    {status:'classified',saved:1});
 });
 
 test('the shared campaign client uses the Workers-compatible redirect mode', async () => {

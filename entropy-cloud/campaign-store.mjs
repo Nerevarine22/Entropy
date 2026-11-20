@@ -41,11 +41,11 @@ export function campaignDecisionWrite(db, { id, rubricId }, post, decision) {
 
 export async function selectCampaign(db, id) {
   if (id !== null && !idPattern.test(id)) throw new ModerationError(400, 'Invalid campaign week.');
-  const { results } = await db.prepare(`SELECT id,label,topic,starts_at AS startsAt,ends_at AS endsAt,rubric_id AS rubricId
+  const { results } = await db.prepare(`SELECT id,label,topic,starts_at AS startsAt,ends_at AS endsAt,rubric_id AS rubricId,revision
     FROM entropy_campaign_weeks ORDER BY starts_at DESC,id`).all();
   const week = id === null ? results[0] : results.find(item => item.id === id);
   if (id !== null && !week) throw new ModerationError(404, 'Campaign week not found.');
-  const publicWeek = ({ rubricId, ...view }) => view;
+  const publicWeek = ({ rubricId, revision, ...view }) => view;
   return { week, view: { weeks: results.map(publicWeek), week: week ? publicWeek(week) : null } };
 }
 

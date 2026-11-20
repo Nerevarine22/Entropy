@@ -149,23 +149,32 @@ async function adminRanking(env, url) {
   return rankPage({ ...snapshot, rows }, requestedPage(url.searchParams.get('page')), searchQuery(url));
 }
 
-async function loadCampaign(db, url) {
+async function loadCampaign(env, url, includeReview = false) {
+  const db = env.DB;
   const { week, view } = await selectCampaign(db, url.searchParams.get('week'));
-  if (!week) return { view, dataset: { meta: { asOf: null }, authors: [], posts: [] }, entries: [] };
+  if (!week) return { view, authors: [], entries: [], posts: [],
+    snapshot: summarize({ meta: { asOf: null }, authors: [], posts: [] }) };
   const control = await currentControl(db);
-  const dataset = await readDataset(db, true, control.generation, true, week);
-  return { view, dataset, entries: await campaignEntries(db, week, dataset.posts) };
+  const scope = includeReview ? 'review' : 'public';
+  const cache = env.previewCache ?? globalThis.caches?.default;
+  const key = `${url.origin}${CACHE_NAMESPACE}/campaign/${control.generation}/${control.revision}/${week.id}/${week.rubricId}/${week.revision}/${scope}`;
+  const data = await cached(cache, key, async () => {
+    const dataset = await readDataset(db, true, control.generation, true, week);
+    const entries = await campaignEntries(db, week, dataset.posts);
+    if (includeReview) return { authors: dataset.authors, entries };
+    const posts = entries.filter(entry => entry.status === 'match').map(({ post: { excluded, ...post } }) => post);
+    return { posts, snapshot: summarize({ ...dataset, posts }) };
+  });
+  return { view, ...data };
 }
 
-async function adminCampaign(db, url) {
-  const { view, dataset, entries } = await loadCampaign(db, url);
-  return { ...view, ...campaignReviewPage(entries, dataset.authors, url) };
+async function adminCampaign(env, url) {
+  const { view, authors, entries } = await loadCampaign(env, url, true);
+  return { ...view, ...campaignReviewPage(entries, authors, url) };
 }
 
-async function publicCampaign(db, url, profile) {
-  const { view, dataset, entries } = await loadCampaign(db, url);
-  const posts = entries.filter(entry => entry.status === 'match').map(entry => entry.post);
-  const snapshot = summarize({ ...dataset, posts });
+async function publicCampaign(env, url, profile) {
+  const { view, posts, snapshot } = await loadCampaign(env, url);
   const page = requestedPage(url.searchParams.get('page'));
   if (!profile) return Response.json({ ...view, ...rankPage(snapshot, page, searchQuery(url)) }, { headers: privateHeaders });
   const id = url.searchParams.get('creator');
@@ -173,7 +182,7 @@ async function publicCampaign(db, url, profile) {
   const totalPages = row ? Math.ceil(row.postCount / POST_PAGE_SIZE) : 0;
   if (!row || page > totalPages) return Response.json({ error: 'Profile not found.' }, { status: 404, headers: privateHeaders });
   const offset = (page - 1) * POST_PAGE_SIZE;
-  const byId = new Map(posts.map(({ excluded, ...post }) => [post.id, post]));
+  const byId = new Map(posts.map(post => [post.id, post]));
   return Response.json({ ...creatorSummary(row), posts: row.postIds.slice(offset, offset + POST_PAGE_SIZE).map(id => byId.get(id)),
     offset, page, totalPages }, { headers: privateHeaders });
 }
@@ -226,13 +235,13 @@ export default {
 
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (url.pathname === '/api/admin') return handleAdmin(request, env, target => adminRanking(env, target), target => adminCampaign(env.DB, target));
+    if (url.pathname === '/api/admin') return handleAdmin(request, env, target => adminRanking(env, target), target => adminCampaign(env, target));
     if (url.pathname !== '/api/leaderboard') return new Response('Not Found', { status: 404 });
     if (request.method !== 'GET') return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'GET' } });
     try {
       const view = url.searchParams.get('view');
       if (view === 'campaign' || (view === 'profile' && url.searchParams.has('week'))) {
-        return await publicCampaign(env.DB, url, view === 'profile');
+        return await publicCampaign(env, url, view === 'profile');
       }
       const cache = env.previewCache ?? globalThis.caches?.default;
       const control = await currentControl(env.DB);
