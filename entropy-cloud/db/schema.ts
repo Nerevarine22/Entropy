@@ -99,3 +99,9 @@ export const entropyDailyRanks = sqliteTable('entropy_daily_ranks', {
   board: text('board').notNull(),
   ranks: text('ranks').notNull(),
 }, table => [primaryKey({ columns: [table.day, table.board] })]);
+
+export const entropyActivitySnapshot = sqliteTable('entropy_activity_snapshot', {
+  id: text('id').primaryKey(),
+  refreshedAt: integer('refreshed_at').notNull(),
+  payload: text('payload').notNull(),
+});

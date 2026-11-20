@@ -2,7 +2,7 @@ import weekOne from './campaigns/week-1.json' with { type: 'json' };
 import { CampaignModelError, classifyCampaignPost, identifyCampaign, rubricFrom } from './campaign-model.mjs';
 import { campaignDecisionWrite, registerCampaign } from './campaign-store.mjs';
 
-const rubrics = [weekOne].map(rubricFrom);
+const campaigns = [weekOne].map(input => ({ rubric: rubricFrom(input), announcedOn: input.announcedOn ?? null }));
 const BATCH_SIZE = 12;
 const MINUTE = 60_000;
 const DAY = 24 * 60 * MINUTE;
@@ -11,7 +11,9 @@ const LEASE = 4 * MINUTE;
 const IDLE_INTERVAL = 15 * MINUTE;
 // Matches the partial date index. Its -1 key identifies split JSON payloads.
 const indexedDate = "CASE WHEN json_valid(p.payload) THEN julianday(json_extract(p.payload,'$.publishedAt')) ELSE -1 END";
-export const configuredCampaigns = () => Promise.all(rubrics.map(identifyCampaign));
+export const configuredCampaigns = () => Promise.all(campaigns.map(async ({ rubric, announcedOn }) => ({
+  ...await identifyCampaign(rubric), announcedOn,
+})));
 
 export async function pendingCampaignPosts(db, { id, rubricId, rubric }, now, limit) {
   const { results } = await db.prepare(`

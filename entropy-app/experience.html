@@ -17,7 +17,7 @@
       <nav id="public-navigation" class="navigation" aria-label="Main navigation">
         <a href="#leaderboard" data-page="leaderboard">Leaderboard</a>
         <a href="#campaign" data-page="campaign">Campaign</a>
-        <a href="#methodology" data-page="methodology">Methodology</a>
+        <a href="#activity" data-page="activity">Activity</a>
         <a href="#about" data-page="about">About</a>
       </nav>
       <nav id="admin-navigation" class="navigation" aria-label="Moderation navigation" hidden>
@@ -150,29 +150,66 @@
       <p id="my-stats-feedback" class="my-stats-feedback" role="status" hidden></p>
       <div id="my-stats-content" hidden></div>
     </section>
-    <section class="page info-page" id="page-methodology" hidden>
-      <div class="eyebrow"><span class="status-dot"></span> BEHIND THE NUMBERS</div>
-      <h1>How it <span>works.</span></h1>
-      <p class="info-lead">A clearer view of the creators contributing to the Entropy conversation.</p>
-      <div class="info-grid">
-        <article class="info-card">
-          <span>01 / DISCOVER</span>
-          <h2>Find the conversation.</h2>
-          <p>We index public X posts that mention @entropyIO. Replies and reposts are excluded.</p>
-        </article>
-        <article class="info-card">
-          <span>02 / MEASURE</span>
-          <h2>Follow the impact.</h2>
-          <p>Views and engagement come from the latest available post metrics. Numbers may update at different times. Smart Followers counts are provided by <a href="https://twitterscore.io/" target="_blank" rel="noopener noreferrer">TwitterScore (twitterscore.io)</a>.</p>
-        </article>
-        <article class="info-card">
-          <span>03 / RANK</span>
-          <h2>Creator Score.</h2>
-          <p id="rank-views-methodology">Creators are ranked by total views across indexed posts.</p>
-          <p id="rank-score-methodology" hidden>Score combines views, weighted reactions, reach relative to audience size, and a capped Smart Followers bonus. Accepted posts add up to 20%. Engagement above 10% can reduce the score once a creator has over 1,000 views. The influence map ranks creators by views.</p>
-        </article>
+    <section class="page activity-page" id="page-activity" aria-labelledby="activity-heading" hidden>
+      <div class="my-stats-heading">
+        <div><h1 id="activity-heading">Activity<span class="heading-dot">.</span></h1><p>Posting and reach across the Entropy community.</p></div>
+        <div id="activity-periods" class="activity-periods" role="group" aria-label="Time range">
+          <button type="button" data-activity-period="7" aria-pressed="false">7D</button>
+          <button type="button" data-activity-period="30" aria-pressed="true">30D</button>
+          <button type="button" data-activity-period="90" aria-pressed="false">90D</button>
+          <button type="button" data-activity-period="all" aria-pressed="false">All time</button>
+        </div>
       </div>
-      <p class="info-note">Coverage is partial. Views are cumulative and do not represent unique people or verified organic reach.</p>
+      <p id="activity-status" class="board-status" role="status" hidden></p>
+      <button id="activity-retry" type="button" class="admin-button" hidden>Try again</button>
+      <div id="activity-content" hidden>
+        <div class="activity-context">
+          <p id="activity-range"></p><p id="activity-comparison" hidden></p>
+        </div>
+        <div class="activity-metrics" role="group" aria-label="Period totals and chart metrics">
+          <button class="activity-metric" type="button" data-activity-metric="posts" aria-controls="activity-chart" aria-pressed="true">
+            <span class="activity-metric-label">Indexed posts</span><strong id="activity-posts-total"></strong><span class="activity-change" id="activity-posts-change" hidden></span>
+          </button>
+          <button class="activity-metric" type="button" data-activity-metric="views" aria-controls="activity-chart" aria-pressed="false">
+            <span class="activity-metric-label">Recorded views</span><strong id="activity-views-total"></strong><span class="activity-change" id="activity-views-change" hidden></span>
+          </button>
+          <button class="activity-metric" id="activity-new-authors-card" type="button" data-activity-metric="newAuthors" aria-controls="activity-chart" aria-pressed="false" hidden>
+            <span class="activity-metric-label">New authors</span><strong id="activity-new-authors-total"></strong><span class="activity-change" id="activity-new-authors-change" hidden></span>
+          </button>
+          <div class="activity-metric" id="activity-median" hidden>
+            <span class="activity-metric-label">Median views per post</span><strong id="activity-median-views"></strong>
+          </div>
+        </div>
+        <div class="activity-dashboard">
+          <section id="activity-chart" class="activity-timeline" aria-labelledby="activity-chart-title">
+            <div class="activity-panel-heading"><h2 id="activity-chart-title">Indexed posts</h2><span id="activity-interval"></span></div>
+            <p id="activity-chart-guide" class="sr-only">Use the left and right arrow keys to explore dates.</p>
+            <div class="activity-plot" id="activity-plot" role="group" aria-labelledby="activity-chart-title" aria-describedby="activity-chart-guide" tabindex="0"><canvas aria-hidden="true"></canvas></div>
+          </section>
+          <section class="activity-date-panel" aria-label="Selected date details">
+            <div class="activity-panel-heading">
+              <h2 id="activity-selected-date"></h2>
+              <div class="activity-date-nav">
+                <button type="button" data-activity-step="-1" aria-label="Previous chart interval">←</button>
+                <button type="button" data-activity-step="1" aria-label="Next chart interval">→</button>
+              </div>
+            </div>
+            <dl class="activity-date-metrics">
+              <div><dt>Indexed posts</dt><dd id="activity-selected-posts"></dd></div>
+              <div><dt>Recorded views</dt><dd id="activity-selected-views"></dd></div>
+              <div id="activity-selected-authors" hidden><dt>New authors</dt><dd id="activity-selected-new-authors"></dd></div>
+            </dl>
+            <ul id="activity-campaign-selection" class="activity-date-events" aria-label="Campaign dates" hidden></ul>
+          </section>
+        </div>
+        <p id="activity-announcement" class="sr-only" role="status"></p>
+        <div class="activity-notes">
+          <p class="activity-note">Views use the latest recorded totals, grouped by post date.</p>
+          <p id="activity-updated" class="activity-note"></p>
+          <p id="activity-new-authors-note" class="activity-note" hidden>New authors are counted on the date of their first indexed post.</p>
+          <p id="activity-coverage" class="activity-note" hidden></p>
+        </div>
+      </div>
     </section>
     <section class="page info-page" id="page-about" hidden><div class="eyebrow"><span class="status-dot"></span> ABOUT THIS PROJECT</div><h1>The community <span>behind Entropy.</span></h1><p class="info-lead">A home for the creators contributing to the Entropy conversation.</p><div class="about-card"><div class="about-pattern" aria-hidden="true"></div><div class="about-content"><span>ENTROPY / CREATORS</span><h2>Good ideas deserve<br>to be seen.</h2><p>Discover creators, explore their posts and see how the conversation is growing.</p><a class="outline-button" href="https://x.com/entropyIO" target="_blank" rel="noopener noreferrer">Follow Entropy on X <span>↗</span></a></div></div></section>
   </main>

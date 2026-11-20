@@ -1,10 +1,10 @@
-import { creatorSummary, EARLY_CREATOR_PERIOD, POST_PAGE_SIZE, postScore, rankPage, requestedPage, summarize } from './leaderboard-view.mjs';
+import { creatorSummary, EARLY_CREATOR_PERIOD, POST_PAGE_SIZE, postScore, rankPage, requestedPage, summarize, summarizeActivity } from './leaderboard-view.mjs';
 import { handleAdmin } from './admin-worker.mjs';
 import { collectLeaderboardPage } from './leaderboard-ingestion.mjs';
 import { collectSmartFollowers } from './leaderboard-smart-followers.mjs';
 import { currentControl, ModerationError, rankingReviews, storedRecords } from './moderation-store.mjs';
 import { campaignEntries, campaignReviewPage, selectCampaign } from './campaign-store.mjs';
-import { collectCampaignDecisions } from './campaign-ingestion.mjs';
+import { collectCampaignDecisions, configuredCampaigns } from './campaign-ingestion.mjs';
 import { hasStatsServiceAccess, overallKey, personalRank, recentRanks, storeDailyRanks } from './leaderboard-stats.mjs';
 
 const METRICS = ['impressions', 'likes', 'reposts', 'quotes', 'replies'];
@@ -69,6 +69,8 @@ const publicHeaders = { 'Cache-Control': 'public, max-age=0, must-revalidate', '
 const privateHeaders = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' };
 const CACHE_SECONDS = 900;
 const CACHE_NAMESPACE = '/__entropy_cache/v5';
+const ACTIVITY_REFRESH_MS = 6 * 60 * 60 * 1000;
+const ACTIVITY_SNAPSHOT_VERSION = 4;
 const cacheFills = new Map();
 
 async function cached(cache, key, build) {
@@ -113,6 +115,46 @@ async function readDataset(db, includeText, generation, includeExcluded = false,
 export async function readCampaignSource(db) {
   const control = await currentControl(db);
   return readDataset(db, true, control.generation, true);
+}
+
+function activityCampaignDates(registered, configured, through) {
+  const weeks = new Map(configured.map(({ id, rubric, announcedOn }) => [id, {
+    label: rubric.week, topic: rubric.topic, startsAt: new Date(rubric.start).toISOString(), announcedOn,
+  }]));
+  for (const { id, label, topic, startsAt } of registered) {
+    const existing = weeks.get(id);
+    weeks.set(id, { label, topic, startsAt, announcedOn: existing?.startsAt === startsAt ? existing.announcedOn : null });
+  }
+  return [...weeks.values()].flatMap(({ label, topic, startsAt, announcedOn }) => {
+    const startDate = startsAt.slice(0, 10);
+    const event = { label, topic };
+    if (announcedOn === startDate) return [{ ...event, date: startDate, type: 'announcement-and-start' }];
+    const start = { ...event, date: startDate, type: 'start' };
+    return announcedOn ? [{ ...event, date: announcedOn, type: 'announcement' }, start] : [start];
+  }).filter(({ date }) => date <= through).sort((a, b) => a.date.localeCompare(b.date));
+}
+
+export async function refreshActivitySnapshot({ DB: db }, now = Date.now()) {
+  const previous = await db.prepare(`SELECT refreshed_at, json_extract(payload,'$.version') AS version
+    FROM entropy_activity_snapshot WHERE id='main'`).first();
+  if (previous?.version >= ACTIVITY_SNAPSHOT_VERSION && now - previous.refreshed_at < ACTIVITY_REFRESH_MS) return false;
+  const { generation, revision } = await currentControl(db);
+  const [dataset, { view: { weeks } }, configured] = await Promise.all([
+    readDataset(db, false, generation), selectCampaign(db, null), configuredCampaigns(),
+  ]);
+  const refreshedAt = new Date(now).toISOString();
+  const through = refreshedAt.slice(0, 10);
+  const campaigns = activityCampaignDates(weeks, configured, through);
+  const payload = JSON.stringify({ version: ACTIVITY_SNAPSHOT_VERSION,
+    ...summarizeActivity(dataset.posts, through), campaigns, through, refreshedAt });
+  const result = await db.prepare(`INSERT INTO entropy_activity_snapshot (id,refreshed_at,payload)
+    SELECT 'main',?,? WHERE EXISTS (SELECT 1 FROM entropy_control WHERE id='main' AND generation=? AND revision=?)
+    ON CONFLICT(id) DO UPDATE SET refreshed_at=excluded.refreshed_at,payload=excluded.payload
+    WHERE excluded.refreshed_at >= entropy_activity_snapshot.refreshed_at
+      AND (COALESCE(json_extract(entropy_activity_snapshot.payload,'$.version'), 0) < ?
+        OR excluded.refreshed_at - entropy_activity_snapshot.refreshed_at >= ?)`)
+    .bind(now, payload, generation, revision, ACTIVITY_SNAPSHOT_VERSION, ACTIVITY_REFRESH_MS).run();
+  return result.meta.changes === 1;
 }
 
 async function rankingSnapshot(env, url, control) {
@@ -299,6 +341,9 @@ export default {
       try {
         if (await captureDailyRanks(env, new URL('https://entropy-rank-snapshots.internal'))) console.log('Saved daily leaderboard ranks');
       } catch { console.error('Could not save daily leaderboard ranks'); }
+      try {
+        if (await refreshActivitySnapshot(env)) console.log('Saved posting activity snapshot');
+      } catch { console.error('Could not save posting activity snapshot'); }
     }
   },
 
@@ -321,6 +366,11 @@ export default {
     try {
       const view = url.searchParams.get('view');
       if (view === 'stats') return await publicCreatorStats(env, url);
+      if (view === 'activity') {
+        const snapshot = await env.DB.prepare("SELECT payload FROM entropy_activity_snapshot WHERE id='main'").first();
+        return snapshot ? Response.json(JSON.parse(snapshot.payload), { headers: publicHeaders })
+          : Response.json({ days: [], through: null, refreshedAt: null }, { headers: privateHeaders });
+      }
       if (view === 'campaign' || (view === 'profile' && url.searchParams.has('week'))) {
         return await publicCampaign(env, url, view === 'profile');
       }

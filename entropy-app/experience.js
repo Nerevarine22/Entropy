@@ -85,8 +85,6 @@
     const { rows: visible, page, totalPages, offset, total } = data;
     const rankedByScore = data.rankingMetric === 'score';
     $('score-column').hidden = !rankedByScore;
-    $('rank-score-methodology').hidden = !rankedByScore;
-    $('rank-views-methodology').hidden = rankedByScore;
     boardPage = page;
     rows = visible;
     $('leaderboard-body').innerHTML = visible.map(row => {
@@ -679,10 +677,288 @@
     }
   }
 
+  const activityDayMs = 86_400_000;
+  const activityCacheMs = 5 * 60 * 1000;
+  const activityPlot = $('activity-plot');
+  const activityCanvas = activityPlot.querySelector('canvas');
+  const activityMetricButtons = [...document.querySelectorAll('[data-activity-metric]')];
+  const activityDateButtons = [...document.querySelectorAll('[data-activity-step]')];
+  const activityPlotPadding = { left: 48, right: 8 };
+  const activityMetricTitles = {
+    posts: 'Posts by publication date',
+    views: 'Views by post publication date',
+    newAuthors: 'New authors by first post date',
+  };
+  const activityDate = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+  const activityDateWithYear = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
+  const activityUpdatedDate = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone: 'UTC' });
+  const activityPercent = new Intl.NumberFormat('en-US', { style: 'percent', maximumFractionDigits: 1, signDisplay: 'exceptZero' });
+  const activityEventLabels = { start: 'starts', announcement: 'announced', 'announcement-and-start': 'announced and started' };
+  let activityData, activityRequest, activityPeriod = '30', activityGroups = [], activitySelected = 0, activityMetric = 'posts';
+  let activityFetchedAt = 0;
+
+  function activityDateRange(start, end) {
+    const formatter = new Date(start).getUTCFullYear() === new Date(end).getUTCFullYear() ? activityDate : activityDateWithYear;
+    const first = formatter.format(start);
+    return start === end ? first : `${first} – ${formatter.format(end)}`;
+  }
+
+  function setActivityMetric(metric) {
+    activityMetric = metric;
+    $('activity-chart-title').textContent = activityMetricTitles[metric];
+    for (const button of activityMetricButtons) {
+      button.setAttribute('aria-pressed', String(button.dataset.activityMetric === metric));
+    }
+  }
+
+  function drawActivityPlot() {
+    const { clientWidth: width, clientHeight: height } = activityCanvas;
+    if (!width || !height || !activityGroups.length) return;
+    const ctx = activityCanvas.getContext('2d');
+    if (!ctx) return;
+    const scale = window.devicePixelRatio || 1;
+    activityCanvas.width = Math.round(width * scale);
+    activityCanvas.height = Math.round(height * scale);
+    ctx.scale(scale, scale);
+
+    const maximum = Math.max(...activityGroups.map(group => group[activityMetric]), 1);
+    const tickCount = 4;
+    const order = 10 ** Math.floor(Math.log10(maximum / tickCount));
+    const step = Math.max(1, Math.ceil((maximum / tickCount) / order) * order);
+    const left = activityPlotPadding.left;
+    const top = activityGroups.some(group => group.campaigns.length) ? 32 : 13;
+    const right = width - activityPlotPadding.right, bottom = height - 26;
+    const band = (right - left) / activityGroups.length;
+    const bar = Math.min(44, band * .68);
+    ctx.font = '11px "IBM Plex Mono", monospace';
+    ctx.fillStyle = '#a3aba5';
+    ctx.textBaseline = 'middle';
+    ctx.strokeStyle = '#2b342e';
+    for (let i = 0; i <= tickCount; i++) {
+      const y = bottom - (bottom - top) * i / tickCount;
+      ctx.fillText(compact(i * step), 0, y, left - 5);
+      ctx.beginPath();
+      ctx.moveTo(left, y);
+      ctx.lineTo(right, y);
+      ctx.stroke();
+    }
+
+    ctx.fillStyle = '#b8f3d212';
+    ctx.fillRect(left + activitySelected * band, top, band, bottom - top);
+    activityGroups.forEach((group, index) => {
+      const value = group[activityMetric];
+      if (!value) return;
+      const barHeight = (bottom - top) * value / (step * tickCount);
+      ctx.fillStyle = index === activitySelected ? '#b8f3d2' : '#57836b';
+      ctx.fillRect(left + band * (index + .5) - bar / 2, bottom - barHeight, bar, barHeight);
+    });
+    ctx.strokeStyle = '#b8f3d2';
+    ctx.fillStyle = '#b8f3d2';
+    ctx.setLineDash([3, 3]);
+    let previousLabelEnd = -Infinity;
+    activityGroups.forEach((group, index) => {
+      for (const { time, label } of group.campaigns) {
+        const offset = (time - group.start + activityDayMs / 2) / (group.end - group.start + activityDayMs);
+        const x = left + band * (index + offset);
+        ctx.beginPath();
+        ctx.moveTo(x, top);
+        ctx.lineTo(x, bottom);
+        ctx.stroke();
+        ctx.fillRect(x - 2, top - 2, 4, 4);
+        const labelWidth = Math.min(ctx.measureText(label).width, right - left);
+        const labelX = Math.max(left, Math.min(x - labelWidth / 2, right - labelWidth));
+        if (labelX >= previousLabelEnd + 8) {
+          ctx.fillText(label, labelX, top - 15, labelWidth);
+          previousLabelEnd = labelX + labelWidth;
+        }
+      }
+    });
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#a3aba5';
+    const dateLabels = Math.min(activityGroups.length, width < 460 ? 3 : 5);
+    for (let i = 0; i < dateLabels; i++) {
+      const index = Math.round(i * (activityGroups.length - 1) / Math.max(1, dateLabels - 1));
+      const first = i === 0, last = i > 0 && i === dateLabels - 1;
+      ctx.textAlign = first ? 'left' : last ? 'right' : 'center';
+      const x = first ? left : last ? right : left + (index + .5) * band;
+      const date = last ? activityGroups[index].end : activityGroups[index].start;
+      ctx.fillText(activityDate.format(date), x, height - 8);
+    }
+  }
+
+  function selectActivityGroup(index, announce = false) {
+    const group = activityGroups[index];
+    if (!group) return;
+    activitySelected = index;
+    const date = activityDateRange(group.start, group.end);
+    const views = group.posts && !group.postsWithViews ? null : group.views;
+    $('activity-selected-date').textContent = date;
+    $('activity-selected-posts').textContent = format(group.posts);
+    $('activity-selected-views').textContent = format(views);
+    $('activity-selected-authors').hidden = group.newAuthors === null;
+    $('activity-selected-new-authors').textContent = format(group.newAuthors);
+    for (const button of activityDateButtons) {
+      button.disabled = !activityGroups[index + Number(button.dataset.activityStep)];
+    }
+    const events = group.campaigns.map(({ label, topic, time, type }) => ({
+      title: `${activityDate.format(time)} · ${label} ${activityEventLabels[type] ?? activityEventLabels.start}`,
+      topic,
+    }));
+    const campaignSelection = $('activity-campaign-selection');
+    campaignSelection.hidden = !events.length;
+    campaignSelection.replaceChildren(...events.map(({ title, topic }) => {
+      const item = document.createElement('li');
+      const heading = document.createElement('strong');
+      const description = document.createElement('p');
+      heading.textContent = title;
+      description.textContent = topic;
+      item.append(heading, description);
+      return item;
+    }));
+    if (announce) {
+      const summary = [date, `Posts: ${format(group.posts)}`, views === null ? 'Views unavailable' : `Views: ${format(views)}`];
+      if (group.newAuthors !== null) summary.push(`New authors: ${format(group.newAuthors)}`);
+      $('activity-announcement').textContent = [...summary, ...events.map(({ title, topic }) => `${title} · ${topic}`)].join('. ');
+    }
+    drawActivityPlot();
+  }
+
+  function renderActivityComparison(first, from, through, current) {
+    const previousFrom = from - (through - from + activityDayMs);
+    const canCompare = activityPeriod !== 'all' && previousFrom >= first;
+    const label = $('activity-comparison');
+    label.hidden = !canCompare;
+    label.textContent = canCompare ? `vs. ${activityDateRange(previousFrom, from - activityDayMs)}` : '';
+
+    const previous = { posts: 0, views: 0, postsWithViews: 0, newAuthors: 0 };
+    if (canCompare) {
+      for (const record of activityData.days) {
+        const time = Date.parse(record.date);
+        if (time < previousFrom || time >= from) continue;
+        previous.posts += record.posts;
+        previous.views += record.views;
+        previous.postsWithViews += record.postsWithViews;
+        previous.newAuthors += record.newAuthors ?? 0;
+      }
+    }
+    const completeViewCounts = current.postsWithViews === current.posts && previous.postsWithViews === previous.posts;
+    for (const [id, metric, available] of [
+      ['posts', 'posts', true], ['views', 'views', completeViewCounts], ['new-authors', 'newAuthors', current.newAuthors !== null],
+    ]) {
+      const element = $(`activity-${id}-change`);
+      element.hidden = !canCompare || !available;
+      if (element.hidden) continue;
+      const change = current[metric] - previous[metric];
+      element.dataset.direction = change > 0 ? 'up' : change < 0 ? 'down' : 'flat';
+      element.textContent = previous[metric] || !change
+        ? activityPercent.format(previous[metric] ? change / previous[metric] : 0) : `+${format(change)}`;
+    }
+  }
+
+  function renderActivity() {
+    const selectedDate = activityGroups[activitySelected]?.end;
+    const through = Date.parse(activityData.through);
+    const days = new Map(activityData.days.map(day => [day.date, day]));
+    const hasNewAuthors = activityData.days.every(day => Number.isSafeInteger(day.newAuthors));
+    const first = Date.parse(activityData.days[0].date);
+    const from = activityPeriod === 'all' ? first : Math.max(first, through - (Number(activityPeriod) - 1) * activityDayMs);
+    const duration = (through - from) / activityDayMs + 1;
+    const interval = duration > 365 ? 'Monthly' : duration > 45 ? 'Weekly' : 'Daily';
+    activityGroups = [];
+    let current;
+    let posts = 0, views = 0, postsWithViews = 0, newAuthors = 0;
+    for (let time = from; time <= through; time += activityDayMs) {
+      const day = new Date(time);
+      const date = day.toISOString().slice(0, 10);
+      const key = interval === 'Monthly' ? date.slice(0, 7) : interval === 'Weekly'
+        ? time - ((day.getUTCDay() + 6) % 7) * activityDayMs : time;
+      if (current?.key !== key) {
+        current = { key, start: time, end: time, posts: 0, views: 0, postsWithViews: 0, newAuthors: hasNewAuthors ? 0 : null, campaigns: [] };
+        activityGroups.push(current);
+      }
+      current.end = time;
+      const record = days.get(date);
+      if (!record) continue;
+      current.posts += record.posts;
+      current.views += record.views;
+      current.postsWithViews += record.postsWithViews;
+      posts += record.posts;
+      views += record.views;
+      postsWithViews += record.postsWithViews;
+      if (hasNewAuthors) {
+        current.newAuthors += record.newAuthors;
+        newAuthors += record.newAuthors;
+      }
+    }
+    for (const { date, label, topic, type } of activityData.campaigns ?? []) {
+      const time = Date.parse(date);
+      activityGroups.find(group => time >= group.start && time <= group.end)?.campaigns.push({ time, label, topic, type });
+    }
+    $('activity-range').textContent = activityDateRange(from, through);
+    $('activity-interval').textContent = `${interval} · UTC`;
+    $('activity-posts-total').textContent = format(posts);
+    $('activity-views-total').textContent = posts && !postsWithViews ? '—' : format(views);
+    $('activity-new-authors-card').hidden = !hasNewAuthors;
+    $('activity-new-authors-note').hidden = !hasNewAuthors;
+    $('activity-new-authors-total').textContent = hasNewAuthors ? format(newAuthors) : '';
+    setActivityMetric(!hasNewAuthors && activityMetric === 'newAuthors' ? 'posts' : activityMetric);
+    const median = activityData.medianViews?.[activityPeriod];
+    $('activity-median').hidden = median === undefined;
+    $('activity-median-views').textContent = median === undefined ? '' : format(median);
+    renderActivityComparison(first, from, through, { posts, views, postsWithViews, newAuthors: hasNewAuthors ? newAuthors : null });
+    const coverage = $('activity-coverage');
+    coverage.hidden = postsWithViews === posts;
+    coverage.textContent = `Views available for ${format(postsWithViews)} of ${format(posts)} posts.`;
+    const previousSelection = activityGroups.findIndex(group => selectedDate >= group.start && selectedDate <= group.end);
+    const lastIndexed = activityGroups.findLastIndex(group => group.posts > 0);
+    selectActivityGroup(previousSelection >= 0 ? previousSelection : Math.max(0, lastIndexed));
+  }
+
+  async function loadActivity() {
+    if (activityRequest || (activityData && Date.now() - activityFetchedAt < activityCacheMs)) return;
+    const request = activityRequest = new AbortController();
+    const status = $('activity-status'), retry = $('activity-retry');
+    status.hidden = Boolean(activityData);
+    retry.hidden = true;
+    status.textContent = 'Loading activity…';
+    try {
+      const data = await getData({ view: 'activity' }, request.signal);
+      if (request.signal.aborted) return;
+      if (!data.refreshedAt) {
+        status.hidden = false;
+        status.textContent = 'The activity snapshot is being prepared.';
+        retry.hidden = false;
+        return;
+      }
+      activityData = data;
+      activityFetchedAt = Date.now();
+      if (!data.days.length) {
+        $('activity-content').hidden = true;
+        status.hidden = false;
+        status.textContent = 'No indexed posts yet.';
+        return;
+      }
+      $('activity-updated').textContent = `Updated ${activityUpdatedDate.format(Date.parse(data.refreshedAt))} UTC.`;
+      $('activity-content').hidden = false;
+      renderActivity();
+      status.hidden = true;
+    } catch {
+      if (request.signal.aborted) return;
+      activityData = null;
+      $('activity-content').hidden = true;
+      status.hidden = false;
+      status.textContent = 'Could not load activity.';
+      retry.hidden = false;
+    } finally {
+      if (activityRequest === request) activityRequest = null;
+    }
+  }
+
   function showPage() {
-    const hash = location.hash.slice(1);
+    const fragment = location.hash.slice(1);
+    const hash = fragment === 'methodology' ? 'activity' : fragment;
     const key = admin ? (adminSignedIn ? (hash === 'weekly-review' ? hash : 'leaderboard') : '')
-      : ['leaderboard', 'campaign', 'methodology', 'about'].includes(hash) || (statsEnabled && hash === 'my-stats') ? hash : 'leaderboard';
+      : ['leaderboard', 'campaign', 'activity', 'about'].includes(hash) || (statsEnabled && hash === 'my-stats') ? hash : 'leaderboard';
     const campaign = key === 'campaign';
     const board = campaign || key === 'leaderboard';
     document.querySelectorAll('.page').forEach(el => { el.hidden = el.id !== 'page-' + (campaign ? 'leaderboard' : key); });
@@ -693,6 +969,11 @@
     $('board-title').textContent = admin ? 'Moderation' : campaign ? 'Weekly leaderboard' : 'Leaderboard';
     if (key === 'weekly-review') loadWeeklyReview();
     else weeklyRequest?.abort();
+    if (key === 'activity') loadActivity();
+    else if (activityRequest) {
+      activityRequest.abort();
+      activityRequest = null;
+    }
     if (key === 'my-stats') restoreMyStats();
     else if (myStatsRequest) {
       myStatsRequest.abort();
@@ -883,6 +1164,41 @@
     $('my-stats-form').addEventListener('submit', event => {
       event.preventDefault();
       loadMyStats();
+    });
+    $('activity-periods').addEventListener('click', event => {
+      const button = event.target.closest('[data-activity-period]');
+      if (!button || button.dataset.activityPeriod === activityPeriod) return;
+      activityPeriod = button.dataset.activityPeriod;
+      for (const option of $('activity-periods').querySelectorAll('button')) option.setAttribute('aria-pressed', String(option === button));
+      if (activityData?.days.length) renderActivity();
+    });
+    $('activity-retry').addEventListener('click', loadActivity);
+    for (const button of activityMetricButtons) {
+      button.addEventListener('click', () => {
+        setActivityMetric(button.dataset.activityMetric);
+        drawActivityPlot();
+      });
+    }
+    for (const button of activityDateButtons) {
+      button.addEventListener('click', () => selectActivityGroup(activitySelected + Number(button.dataset.activityStep), true));
+    }
+    const activityResize = new ResizeObserver(drawActivityPlot);
+    activityResize.observe(activityPlot);
+    const selectFromPointer = (event, announce) => {
+      const rect = activityCanvas.getBoundingClientRect();
+      const width = rect.width - activityPlotPadding.left - activityPlotPadding.right;
+      if (width <= 0 || !activityGroups.length) return;
+      const index = Math.floor((event.clientX - rect.left - activityPlotPadding.left) / width * activityGroups.length);
+      if (index !== activitySelected || announce) selectActivityGroup(index, announce);
+    };
+    activityCanvas.addEventListener('pointermove', event => {
+      if (event.pointerType === 'mouse') selectFromPointer(event, false);
+    });
+    activityCanvas.addEventListener('click', event => selectFromPointer(event, true));
+    activityPlot.addEventListener('keydown', event => {
+      if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+      event.preventDefault();
+      selectActivityGroup(activitySelected + (event.key === 'ArrowLeft' ? -1 : 1), true);
     });
   }
   if (admin) initAdmin();

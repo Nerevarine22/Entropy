@@ -49,6 +49,37 @@ export function postScore(author, { impressions, likes, reposts, quotes }) {
     smartFollowers: author.twitterScore?.smartFollowers, postCount: 1 });
 }
 
+export function summarizeActivity(posts, through) {
+  const days = new Map();
+  const firstPostByAuthor = new Map();
+  const viewSamples = [];
+  for (const { authorId, date, metrics } of posts) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date > through) continue;
+    if (!days.has(date)) days.set(date, { date, posts: 0, views: 0, postsWithViews: 0, newAuthors: 0 });
+    const day = days.get(date);
+    day.posts++;
+    if (isCount(metrics.impressions)) {
+      day.views += metrics.impressions;
+      day.postsWithViews++;
+      viewSamples.push({ date, views: metrics.impressions });
+    }
+    const firstPost = firstPostByAuthor.get(authorId);
+    if (!firstPost || date < firstPost) firstPostByAuthor.set(authorId, date);
+  }
+  for (const date of firstPostByAuthor.values()) days.get(date).newAuthors++;
+
+  viewSamples.sort((a, b) => a.views - b.views);
+  const medianViews = {};
+  for (const period of [7, 30, 90, 'all']) {
+    const from = period === 'all' ? '' : new Date(Date.parse(through) - (period - 1) * 86_400_000).toISOString().slice(0, 10);
+    const samples = viewSamples.filter(sample => sample.date >= from);
+    const middle = Math.floor(samples.length / 2);
+    medianViews[period] = samples.length
+      ? (samples[Math.floor((samples.length - 1) / 2)].views + samples[middle].views) / 2 : null;
+  }
+  return { days: [...days.values()].sort((a, b) => a.date.localeCompare(b.date)), medianViews };
+}
+
 export function summarize(dataset) {
   const groups = new Map();
   for (const post of dataset.posts) {

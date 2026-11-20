@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { Readable } from 'node:stream';
 import path from 'node:path';
 import { readLocalDataset, withLocalD1 } from './local-d1.mjs';
-import leaderboard, { captureDailyRanks, readMyStats } from '../entropy-cloud/leaderboard-worker.mjs';
+import leaderboard, { captureDailyRanks, readMyStats, refreshActivitySnapshot } from '../entropy-cloud/leaderboard-worker.mjs';
 import { createMyStatsHandler } from './x-sign-in.mjs';
 const base = path.dirname(fileURLToPath(import.meta.url));
 const allowed = new Set(['index.html', 'styles.css', 'scoring.js', 'model.js', 'seed.js', 'app.js', 'seed.json', 'experience.html', 'experience.css', 'experience.js', 'entropy-logo.png']);
@@ -80,8 +80,14 @@ const server = createServer(async (req, res) => {
 });
 server.listen(port, '127.0.0.1', () => {
   console.log('Local: ' + localOrigin);
-  const recordRanks = () => captureLocalDay()?.catch(() => console.warn('Could not save the local daily ranks.'));
-  recordRanks();
-  setInterval(recordRanks, 60_000).unref();
+  let pendingActivity;
+  const updateSnapshots = () => {
+    captureLocalDay()?.catch(() => console.warn('Could not save the local daily ranks.'));
+    pendingActivity ??= withStatsDb(refreshActivitySnapshot)
+      .catch(() => console.warn('Could not save the local activity snapshot.'))
+      .finally(() => { pendingActivity = null; });
+  };
+  updateSnapshots();
+  setInterval(updateSnapshots, 60_000).unref();
 });
 process.on('SIGINT', () => server.close(() => process.exit(0)));

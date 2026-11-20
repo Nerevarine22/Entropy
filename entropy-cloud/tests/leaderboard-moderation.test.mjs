@@ -5,7 +5,7 @@ import test from 'node:test';
 import { creatorScore } from '../leaderboard-view.mjs';
 import { collectCampaignDecisions } from '../campaign-ingestion.mjs';
 import { CampaignModelError, classifyCampaignPost } from '../campaign-model.mjs';
-import worker from '../leaderboard-worker.mjs';
+import worker, { refreshActivitySnapshot } from '../leaderboard-worker.mjs';
 import { localD1Binding } from '../../entropy-app/local-d1.mjs';
 
 const origin = 'https://leaderboard.example';
@@ -15,7 +15,7 @@ const date = '2026-09-01';
 const asOf = date + 'T12:00:00.000Z';
 const reason = 'Internal moderation example';
 const migrations = await Promise.all(['0000_aberrant_gamora.sql', '0001_creator_moderation.sql', '0003_campaign_weeks.sql',
-  '0004_campaign_collection.sql', '0005_campaign_read_budget.sql']
+  '0004_campaign_collection.sql', '0005_campaign_read_budget.sql', '0007_activity_snapshot.sql']
   .map(name => readFile(new URL('../drizzle/' + name, import.meta.url), 'utf8')));
 
 function fixture(context) {
@@ -28,8 +28,8 @@ function fixture(context) {
     ON CONFLICT(generation,kind,record_id,chunk_index) DO UPDATE SET payload=excluded.payload
   `).run(generation, kind, id, JSON.stringify(payload));
   const update = () => db.exec("UPDATE entropy_control SET revision=revision+1 WHERE id='main'");
-  const savePost = (id, authorId, body, views) => {
-    store('post', id, { id, authorId, date, publishedAt: asOf, isReply: false, body,
+  const savePost = (id, authorId, body, views, postDate = date) => {
+    store('post', id, { id, authorId, date: postDate, publishedAt: `${postDate}T12:00:00.000Z`, isReply: false, body,
       metrics: { impressions: views, likes: 2, reposts: 1, quotes: 0, replies: 0 } });
     update();
   };
@@ -70,13 +70,60 @@ function fixture(context) {
     assert.match(issued, /HttpOnly; SameSite=Strict; Secure/);
     cookie = issued.split(';')[0];
   }
-  return { call, login, savePost, db, datasetReads: () => datasetReads };
+  return { call, login, savePost, db, refreshActivity: now => refreshActivitySnapshot(env, now), datasetReads: () => datasetReads };
 }
 
 const data = async response => {
   assert.equal(response.status, 200);
   return response.json();
 };
+
+test('Activity persists and upgrades daily totals, range medians and campaign dates', async context => {
+  const { call, login, db, savePost, refreshActivity, datasetReads } = fixture(context);
+  const now = Date.parse(asOf);
+  const interval = 6 * 60 * 60 * 1000;
+  const earlierDate = '2026-08-31';
+  const oldestDate = '2026-08-01';
+  savePost('333', '11', 'Post with missing views', null);
+  savePost('444', '11', 'Earlier @entropyIO post', 20, earlierDate);
+  savePost('555', '22', 'Old @entropyIO post with zero views', 0, oldestDate);
+  db.prepare(`INSERT INTO entropy_campaign_weeks (id,label,topic,starts_at,ends_at,rubric_id) VALUES (?,?,?,?,?,?)`)
+    .run('week-1', 'Week 1', 'Discord roles', asOf, '2026-09-07T00:00:00.000Z', 'rubric-1');
+  const activityApi = async () => data(await call('/api/leaderboard?view=activity'));
+  assert.deepEqual(await activityApi(), { days: [], through: null, refreshedAt: null });
+  const previous = { version: 2, days: [{ date, posts: 3, views: 200, postsWithViews: 2, newAuthors: 0 }], through: date,
+    refreshedAt: new Date(now - 1).toISOString() };
+  db.prepare("INSERT INTO entropy_activity_snapshot (id,refreshed_at,payload) VALUES ('main',?,?)")
+    .run(now - 1, JSON.stringify(previous));
+  assert.deepEqual(await activityApi(), previous);
+  assert.equal(await refreshActivity(now), true);
+  const initialReads = datasetReads();
+  const activity = await activityApi();
+  assert.deepEqual(activity.days, [
+    { date: oldestDate, posts: 1, views: 0, postsWithViews: 1, newAuthors: 1 },
+    { date: earlierDate, posts: 1, views: 20, postsWithViews: 1, newAuthors: 1 },
+    { date, posts: 3, views: 200, postsWithViews: 2, newAuthors: 0 },
+  ]);
+  assert.deepEqual(activity.medianViews, { 7: 80, 30: 80, 90: 50, all: 50 });
+  assert.deepEqual(activity.campaigns, [{ date, label: 'Week 1', topic: 'Discord roles', type: 'start' }]);
+  assert.equal(activity.refreshedAt, new Date(now).toISOString());
+  assert.equal(activity.through, date);
+  assert.equal(await refreshActivity(now + interval - 1), false);
+  assert.equal(datasetReads(), initialReads);
+
+  await login();
+  const profile = await data(await call('/api/admin?view=profile&creator=11'));
+  await data(await call('/api/admin', { action: { action: 'exclude', creator: '11', postId: '444', snapshotId: profile.snapshotId, reason } }));
+  assert.deepEqual(await activityApi(), activity);
+  assert.equal(await refreshActivity(now + interval), true);
+  const updated = await activityApi();
+  assert.deepEqual(updated.days, [
+    { date: oldestDate, posts: 1, views: 0, postsWithViews: 1, newAuthors: 1 },
+    { date, posts: 3, views: 200, postsWithViews: 2, newAuthors: 1 },
+  ]);
+  assert.deepEqual(updated.medianViews, { 7: 100, 30: 100, 90: 80, all: 80 });
+  assert.equal(updated.refreshedAt, new Date(now + interval).toISOString());
+});
 
 test('creator score caps audience and volume bonuses and softens high ER only with enough views', () => {
   const small = { views: 900, likes: 45, reposts: 0, quotes: 0, followers: 1000, postCount: 1 };
