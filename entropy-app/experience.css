@@ -67,9 +67,14 @@
 }
 
 :root {
+  scrollbar-gutter: stable;
   --scrollbar-track: #111312;
   --scrollbar-thumb: #505a54;
   --scrollbar-thumb-hover: #748078;
+}
+
+@supports not (scrollbar-gutter: stable) {
+  html { overflow-y: scroll; }
 }
 
 * {
