@@ -222,7 +222,7 @@
     $('influence-map').replaceChildren();
     if (top.length) treemap(top.map(row => ({ row, weight: row.views })), 0, 0, 100, 100);
     else $('influence-map').textContent = 'No view data available yet.';
-    $('map-count').textContent = top.length ? `Top ${top.length} by views` : '';
+    $('map-count').textContent = top.length ? `Top ${top.length} by impressions` : '';
   }
 
   function renderPostText(post, fullId) {
