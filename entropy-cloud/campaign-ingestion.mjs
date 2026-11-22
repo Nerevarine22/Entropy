@@ -1,6 +1,6 @@
 import weekOne from './campaigns/week-1.json' with { type: 'json' };
 import { CampaignModelError, classifyCampaignPost, identifyCampaign, rubricFrom } from './campaign-model.mjs';
-import { campaignDecisionWrite, registerCampaign } from './campaign-store.mjs';
+import { activeCampaignRubric, campaignDecisionWrite, publishCampaignRubric } from './campaign-store.mjs';
 
 const campaigns = [weekOne].map(input => ({ rubric: rubricFrom(input), announcedOn: input.announcedOn ?? null }));
 const BATCH_SIZE = 12;
@@ -86,12 +86,15 @@ export async function collectCampaignDecisions(env, { now = Date.now(), evaluate
   try {
     const writes = [];
     for (const week of weeks) {
-      await registerCampaign(db, week).run();
+      const activeRubricId = await activeCampaignRubric(db, week);
       const posts = await pendingCampaignPosts(db, week, now, BATCH_SIZE - writes.length);
+      if (!posts.length && await publishCampaignRubric(db, week, activeRubricId)) {
+        console.log(`Published updated rubric for ${week.id}`);
+      }
       for (const post of posts) {
         try {
           const decision = await evaluate(post, week.rubric, key);
-          writes.push(campaignDecisionWrite(db, week, post, decision));
+          writes.push(campaignDecisionWrite(db, week, post, decision, activeRubricId));
         } catch (failure) {
           error = failure instanceof CampaignModelError ? failure : new CampaignModelError();
           break;

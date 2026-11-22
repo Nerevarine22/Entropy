@@ -5,12 +5,14 @@ const statusValues = ['match', 'review', 'off_topic'];
 const pageSize = 15;
 const idPattern = /^[a-z0-9][a-z0-9-]{0,39}$/;
 
-export function registerCampaign(db, { id, rubricId, rubric }) {
+export function registerCampaign(db, { id, rubricId, rubric }, previousRubricId = null) {
   return db.prepare(`INSERT INTO entropy_campaign_weeks (id,label,topic,starts_at,ends_at,rubric_id) VALUES (?,?,?,?,?,?)
     ON CONFLICT(id) DO UPDATE SET label=excluded.label,topic=excluded.topic,starts_at=excluded.starts_at,
       ends_at=excluded.ends_at,rubric_id=excluded.rubric_id
-    WHERE entropy_campaign_weeks.rubric_id<>excluded.rubric_id`)
-    .bind(id, rubric.week, rubric.topic, new Date(rubric.start).toISOString(), new Date(rubric.end).toISOString(), rubricId);
+    WHERE entropy_campaign_weeks.rubric_id<>excluded.rubric_id
+      AND (? IS NULL OR entropy_campaign_weeks.rubric_id=?)`)
+    .bind(id, rubric.week, rubric.topic, new Date(rubric.start).toISOString(), new Date(rubric.end).toISOString(),
+      rubricId, previousRubricId, previousRubricId);
 }
 
 function activeBody(postId) {
@@ -26,7 +28,7 @@ function activeBody(postId) {
   )`;
 }
 
-export function campaignDecisionWrite(db, { id, rubricId }, post, decision) {
+export function campaignDecisionWrite(db, { id, rubricId }, post, decision, activeRubricId = rubricId) {
   return db.prepare(`INSERT INTO entropy_campaign_decisions
     (week_id,rubric_id,post_id,post_body,model_status,model_choice,confidence,model)
     SELECT ?,?,?,?,?,?,?,? WHERE ?=(SELECT rubric_id FROM entropy_campaign_weeks WHERE id=?)
@@ -36,7 +38,29 @@ export function campaignDecisionWrite(db, { id, rubricId }, post, decision) {
       confidence=excluded.confidence,model=excluded.model,manual_status=NULL,reviewed_at=NULL,reviewed_by=NULL,revision=revision+1
     WHERE entropy_campaign_decisions.post_body<>excluded.post_body`)
     .bind(id, rubricId, post.id, post.body ?? '', decision.status, decision.choice ?? null,
-      decision.confidence ?? null, decision.model ?? null, rubricId, id, post.body ?? '', post.id);
+      decision.confidence ?? null, decision.model ?? null, activeRubricId, id, post.body ?? '', post.id);
+}
+
+export async function activeCampaignRubric(db, campaign) {
+  const current = db.prepare('SELECT rubric_id FROM entropy_campaign_weeks WHERE id=?').bind(campaign.id);
+  const active = await current.first();
+  if (active) return active.rubric_id;
+  const created = await registerCampaign(db, campaign, campaign.rubricId).run();
+  return created.meta.changes ? campaign.rubricId : (await current.first()).rubric_id;
+}
+
+export async function publishCampaignRubric(db, campaign, previousRubricId) {
+  if (previousRubricId === campaign.rubricId) return false;
+  const carryReviews = db.prepare(`UPDATE entropy_campaign_decisions AS next
+    SET manual_status=prev.manual_status,reviewed_at=prev.reviewed_at,reviewed_by=prev.reviewed_by,
+      revision=MAX(next.revision,prev.revision)+1
+    FROM entropy_campaign_decisions AS prev
+    WHERE next.week_id=? AND next.rubric_id=? AND prev.week_id=next.week_id AND prev.rubric_id=?
+      AND prev.manual_status IS NOT NULL AND prev.post_id=next.post_id AND prev.post_body=next.post_body
+      AND prev.rubric_id=(SELECT rubric_id FROM entropy_campaign_weeks WHERE id=prev.week_id)`)
+    .bind(campaign.id, campaign.rubricId, previousRubricId);
+  const [, published] = await db.batch([carryReviews, registerCampaign(db, campaign, previousRubricId)]);
+  return published.meta.changes === 1;
 }
 
 export async function selectCampaign(db, id) {

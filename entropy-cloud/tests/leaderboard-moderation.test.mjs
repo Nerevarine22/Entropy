@@ -236,6 +236,37 @@ test('campaign scheduler classifies new text, preserves decisions for metrics up
   assert.deepEqual(evaluated,['111','111']);
 });
 
+test('a revised weekly rubric publishes only after the rerun and carries the latest manual review', async context => {
+  const { db, call, login } = fixture(context);
+  const now = Date.parse('2026-11-19T12:00:00Z');
+  db.exec(`UPDATE entropy_records SET payload=json_set(payload,'$.publishedAt','2026-11-19T10:00:00Z','$.date','2026-11-19')
+    WHERE kind='post';
+    INSERT INTO entropy_campaign_weeks (id,label,topic,starts_at,ends_at,rubric_id)
+    VALUES ('week-1','Week 1','Roles','2026-11-17T11:15:01Z','2026-11-22T00:00:00Z','old-rubric');
+    INSERT INTO entropy_campaign_decisions (week_id,rubric_id,post_id,post_body,model_status) VALUES
+      ('week-1','old-rubric','111','Original @entropyIO post','match'),
+      ('week-1','old-rubric','222','Another @entropyIO post','review')`);
+  const env = { DB: localD1Binding(db), TYPESAFE_API_KEY: 'fixture' };
+  const evaluate = async post => ({ status: post.id === '111' ? 'off_topic' : 'match' });
+  const weekly = () => call('/api/leaderboard?view=campaign').then(data);
+
+  assert.deepEqual(await collectCampaignDecisions(env,{now,evaluate}),{status:'classified',saved:2});
+  assert.equal((await weekly()).totals.posts,1);
+  assert.equal(db.prepare("SELECT rubric_id FROM entropy_campaign_weeks WHERE id='week-1'").get().rubric_id,'old-rubric');
+  await login();
+  const queue = await data(await call('/api/admin?view=weekly&week=week-1'));
+  await data(await call('/api/admin',{action:{action:'campaign-review',week:'week-1',postId:'222',status:'off_topic',revision:queue.posts[0].revision}}));
+
+  assert.deepEqual(await collectCampaignDecisions(env,{now:now+300000,evaluate}),{status:'idle',saved:0});
+  assert.equal((await weekly()).totals.posts,0);
+  const decision = db.prepare(`SELECT model_status,manual_status,reviewed_by,reviewed_at FROM entropy_campaign_decisions
+    WHERE week_id='week-1' AND rubric_id=(SELECT rubric_id FROM entropy_campaign_weeks WHERE id='week-1') AND post_id='222'`).get();
+  assert.equal(decision.model_status,'match');
+  assert.equal(decision.manual_status,'off_topic');
+  assert.equal(decision.reviewed_by,'moderator');
+  assert.ok(decision.reviewed_at);
+});
+
 test('campaign scheduler respects bans, individual exclusions and month exclusions', async context => {
   const { db } = fixture(context);
   const now = Date.parse('2026-11-19T12:00:00Z');
