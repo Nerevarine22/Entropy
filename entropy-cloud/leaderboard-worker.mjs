@@ -328,7 +328,11 @@ export default {
   async scheduled(_controller, env) {
     let newPosts = false;
     try {
-      const result = await collectLeaderboardPage(env);
+      let result = await collectLeaderboardPage(env);
+      if (Date.now() < Date.parse(env.ENTROPY_SCAN_RECOVERY_UNTIL_UTC)
+          && ['idle', 'daily-budget'].includes(result.status)) {
+        result = await collectLeaderboardPage(env, { recoveryLimit: 300 });
+      }
       newPosts = result.addedPosts > 0;
       if (result.status !== 'idle') console.log('Leaderboard ingestion', result);
     } finally {
