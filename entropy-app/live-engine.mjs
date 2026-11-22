@@ -239,7 +239,8 @@ function recordError(sync, error, nowMs) {
     httpStatus: status, ...classifySyncError(error) };
   sync.status = 'error';
   const delay = Math.max(sync.intervalMs, Math.min(3600000, 60000 * 2 ** Math.min(sync.consecutiveFailures - 1, 6)));
-  sync.nextRunAt = new Date(nowMs + delay).toISOString();
+  const retryAt = Number.isSafeInteger(error?.retryAt) && error.retryAt <= 8.64e15 ? error.retryAt : 0;
+  sync.nextRunAt = new Date(Math.max(nowMs + delay, retryAt)).toISOString();
   if ([401, 402, 403].includes(status)) { sync.paused = true; sync.status = 'paused'; }
   addGap(sync, { code, at });
 }

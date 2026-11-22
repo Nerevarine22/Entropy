@@ -193,6 +193,28 @@ test('overlapping triggers reserve a single paid page and leave the provider fai
   assert.equal((await f.ranking()).totals.posts, 1);
 });
 
+test('a received 503 preserves the saved search cursor and respects the provider retry time', async context => {
+  const f = fixture(context);
+  await f.run(5, { searchPage: async () => page([tweet('102', 3)], 'saved-cursor') });
+  const retryAt = clock(23);
+  const cursors = [];
+  const client = { async searchPage({ cursor }) {
+    cursors.push(cursor);
+    if (cursors.length === 1) throw Object.assign(new Error('Service Unavailable'), { code: 'HTTP_ERROR', status: 503, retryAt });
+    return page();
+  } };
+  const recover = minute => collectLeaderboardPage(f.env, { now: clock(minute), client, recoveryLimit: 10 });
+  const result = await recover(6);
+  assert.equal(result.status, 'provider-error');
+  assert.equal(result.providerHttpStatus, 503);
+  assert.equal(result.retryAt, new Date(retryAt).toISOString());
+  assert.equal(f.state().budget.units, 1);
+  assert.equal(f.state().budget.recoveryAttempts, 1);
+  assert.equal((await recover(22)).status, 'idle');
+  assert.equal((await recover(23)).status, 'complete');
+  assert.deepEqual(cursors, ['saved-cursor', 'saved-cursor']);
+});
+
 test('daily and monthly budget limits prevent requests before querying the provider', async context => {
   const f = fixture(context);
   const client = { async searchPage() { assert.fail('Budget should prevent a provider call.'); } };

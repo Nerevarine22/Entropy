@@ -84,6 +84,21 @@ test('timeouts are bounded, default to 30s and can explicitly allow 65s', async 
   } finally { AbortSignal.timeout = original; }
   assert.deepEqual(durations, [30000, 65000, 1]);
 });
+test('an HTTP 503 exposes a valid Retry-After and keeps the provider body private', async context => {
+  const now = Date.parse('2026-11-22T12:00:00Z');
+  context.mock.method(Date, 'now', () => now);
+  for (const [header, expected] of [['120', now + 120000], ['Sun, 22 Nov 2026 12:03:00 GMT', now + 180000],
+    ['Sun, 22 Nov 2026 11:59:59 GMT', undefined], ['9999999999999999', undefined]]) {
+    const client = createClient({ apiKey: 'secret', fetchImpl: async () =>
+      new Response('private provider diagnostic', { status: 503, headers: { 'Retry-After': header } }) });
+    await assert.rejects(client.searchPage({ query: '@entropyIO' }), error => {
+      assert.equal(error.status, 503);
+      assert.equal(error.retryAt, expected);
+      assert.ok(!error.message.includes('private provider diagnostic'));
+      return true;
+    });
+  }
+});
 test('timeout and abort failures expose a fixed code without raw cause or credentials', async () => {
   for (const name of ['TimeoutError', 'AbortError', 'Error']) {
     for (const duringBody of [false, true]) {

@@ -7,15 +7,24 @@ const numericId = value => typeof value === 'string' && /^[1-9]\d*$/.test(value)
 const plain = value => !!value && typeof value === 'object' && !Array.isArray(value);
 
 export class TwitterApiError extends Error {
-  constructor(code, message, status = null) {
+  constructor(code, message, status = null, retryAt = null) {
     super(message);
     this.name = 'TwitterApiError';
     this.code = code;
     this.status = status;
+    if (retryAt !== null) this.retryAt = retryAt;
   }
 }
 function invalid(message) { throw new TwitterApiError('INVALID_INPUT', message); }
 function responseError(message) { throw new TwitterApiError('INVALID_RESPONSE', message); }
+
+function retryAfterTime(response) {
+  const header = response.headers?.get?.('Retry-After')?.trim();
+  if (!header) return null;
+  const now = Date.now();
+  const deadline = /^\d+$/.test(header) ? now + Number(header) * 1000 : Date.parse(header);
+  return Number.isSafeInteger(deadline) && deadline > now && deadline <= 8.64e15 ? deadline : null;
+}
 
 export function createClient({ apiKey, fetchImpl, timeoutMs = 30000 } = {}) {
   if (typeof apiKey !== 'string' || !apiKey.trim() || /[\r\n]/.test(apiKey)) invalid('Потрібен серверний ключ twitterapi.io.');
@@ -43,7 +52,8 @@ export function createClient({ apiKey, fetchImpl, timeoutMs = 30000 } = {}) {
     if (!response.ok) {
       const status = Number.isInteger(response.status) ? response.status : null;
       const code = status === 429 ? 'RATE_LIMITED' : status === 402 ? 'CREDITS_EXHAUSTED' : 'HTTP_ERROR';
-      throw new TwitterApiError(code, 'twitterapi.io повернув HTTP ' + (status ?? 'помилку') + '. Автоматичних повторів немає.', status);
+      const retryAt = status === 429 || status === 503 ? retryAfterTime(response) : null;
+      throw new TwitterApiError(code, 'twitterapi.io повернув HTTP ' + (status ?? 'помилку') + '. Автоматичних повторів немає.', status, retryAt);
     }
     let body;
     try { body = await response.json(); }

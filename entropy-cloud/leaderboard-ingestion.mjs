@@ -130,9 +130,15 @@ async function scanDiscovery(db, state, step, api, control, args, now, startingA
     sync: sync ?? { enabled: true, discovery: { recentThrough: iso(startingAt) } },
   }, { now, lane, client: { async searchPage({ query, cursor }) {
     units = PAGE_RESERVE;
-    const page = await api.searchPage({ query: query.replace(/^@entropyIO\b/, term), cursor });
-    units = Math.max(1, page.tweets.length);
-    return page;
+    try {
+      const page = await api.searchPage({ query: query.replace(/^@entropyIO\b/, term), cursor });
+      units = Math.max(1, page.tweets.length);
+      return page;
+    } catch (error) {
+      // TwitterAPI.io does not bill a received HTTP 503 response.
+      if (error?.status === 503) units = 0;
+      throw error;
+    }
   } } });
   const hourly = result.sync.hourly;
   retainCoverage(hourly);
@@ -142,7 +148,8 @@ async function scanDiscovery(db, state, step, api, control, args, now, startingA
   state.addedPosts += incoming.posts.length;
   return { units, changed: incoming.posts.length, writes: recordWrites(db, control.generation, incoming, args, now),
     report: { status: error ? 'provider-error' : hourly.lastWindow?.status || 'idle', addedPosts: incoming.posts.length,
-      ...(error ? { diagnostic: error.diagnosticCode || classifySyncError(error).diagnosticCode } : {}) } };
+      ...(error ? { diagnostic: error.diagnosticCode || classifySyncError(error).diagnosticCode,
+        ...(error.httpStatus ? { providerHttpStatus: error.httpStatus } : {}), retryAt: hourly.nextAttemptAt } : {}) } };
 }
 
 async function refreshMetrics(db, state, api, posts, generation, args, now) {
@@ -232,7 +239,7 @@ export async function collectLeaderboardPage(env, { now = Date.now(), client, re
     const reservation = await db.batch([checkpointWrite(db, state, guardArgs), reserve]);
     if (reservation.some(result => result.meta.changes !== 1)) throw new Error('Could not reserve a collector attempt.');
 
-    const api = client ?? createClient({ apiKey: key, timeoutMs: metrics || recovery ? 35000 : 15000 });
+    const api = client ?? createClient({ apiKey: key, timeoutMs: metrics || recovery ? 35000 : 30000 });
     const result = metrics ? await refreshMetrics(db, state, api, posts, control.generation, guardArgs, now)
       : await scanDiscovery(db, state, step, api, control, guardArgs, now, startingAt);
     state.budget.units = budget.units + result.units;
