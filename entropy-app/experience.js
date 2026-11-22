@@ -42,9 +42,40 @@
 
   function showCampaignSummary(data) {
     displayWeeks($('campaign-week'), data);
-    $('campaign-topic').textContent = data.week?.topic ?? 'Campaign weeks will appear here.';
-    $('campaign-dates').textContent = data.week
-      ? `${reviewDate(data.week.startsAt)} – ${reviewDate(new Date(Date.parse(data.week.endsAt) - 1))} · UTC` : '';
+    const { week } = data;
+    $('campaign-brief').hidden = !week;
+    $('campaign-intro-state').hidden = Boolean(week);
+    if (!week) {
+      $('campaign-intro-state').textContent = 'Campaign weeks will appear here.';
+      return;
+    }
+    const { brief } = week;
+    const starts = Date.parse(week.startsAt), ends = Date.parse(week.endsAt);
+    $('campaign-week-label').textContent = week.label;
+    $('campaign-topic').textContent = brief?.title || week.topic;
+    $('campaign-summary').textContent = brief?.summary ?? '';
+    $('campaign-summary').hidden = !brief?.summary;
+    $('campaign-dates').textContent = `${reviewDate(starts)} – ${reviewDate(ends - 1)} · UTC`;
+    const phase = Date.now() < starts ? 'Upcoming' : Date.now() < ends ? 'In progress' : 'Ended';
+    $('campaign-phase').textContent = phase;
+    $('campaign-phase').dataset.live = String(phase === 'In progress');
+    const topics = brief?.topics ?? [];
+    $('campaign-topics').hidden = !topics.length;
+    $('campaign-topic-list').replaceChildren(...topics.map(({ title, description }) => {
+      const item = document.createElement('li');
+      const heading = document.createElement('h4');
+      const detail = document.createElement('p');
+      heading.textContent = title;
+      detail.textContent = description;
+      item.append(heading, detail);
+      return item;
+    }));
+  }
+
+  function showCampaignLoading() {
+    $('campaign-brief').hidden = true;
+    $('campaign-intro-state').hidden = false;
+    $('campaign-intro-state').textContent = 'Loading campaign…';
   }
 
   function reviewBadge(review) {
@@ -185,6 +216,7 @@
     } catch (error) {
       if (request.signal.aborted) return;
       if (admin && error.status === 401) { showAdminSignIn('Your session has expired.'); return; }
+      if (campaign && $('campaign-brief').hidden) $('campaign-intro-state').textContent = 'Could not load the campaign.';
       const status = loadedBoard ? $('board-count') : $('load-status');
       status.classList.remove('sr-only');
       status.hidden = false;
@@ -989,6 +1021,7 @@
       clearTimeout(searchTimer);
       $('search').value = '';
       resetBoard();
+      if (campaign) showCampaignLoading();
       loadBoard(1);
     }
     if (key === 'leaderboard' && loadedBoard) buildMap();
@@ -1069,6 +1102,7 @@
     $('review-filter').addEventListener('change', () => loadBoard(1));
   }
   $('campaign-week').addEventListener('change', () => {
+    showCampaignLoading();
     resetBoard();
     loadBoard(1);
   });

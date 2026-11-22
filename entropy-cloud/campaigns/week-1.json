@@ -4,6 +4,16 @@
   "from": "2026-11-17T11:15:01Z",
   "until": "2026-11-22T00:00:00Z",
   "topic": "Entropy Discord’s new creator roles and helping newcomers participate",
+  "publicBrief": {
+    "title": "Getting started in Entropy’s Discord",
+    "summary": "Explain the creator roles, show how to earn them, or share a practical tip that helps newcomers take part.",
+    "topics": [
+      { "title": "Discord role system", "description": "Explain what the creator roles are for and how they fit together." },
+      { "title": "Entropy Voices", "description": "Show a newcomer how to get involved and earn the Voices role." },
+      { "title": "Council and Genesis", "description": "Describe the path from Voices to Council or explain where Genesis fits." },
+      { "title": "Firsthand guides", "description": "Share a tip or an experience that helps new members take part." }
+    ]
+  },
   "reviewThreshold": 0.5,
   "rules": "Accept a post if its visible text makes a clear, meaningful point about at least one Week 1 topic: what Entropy’s Discord role system is for, what Entropy Voices, Entropy Council or Entropy Genesis means, how to earn a role or advance, or concrete advice or firsthand experience about joining or taking part in Entropy’s Discord. One specific point or one useful step is enough. Accept short tips, summaries and quote commentary in any language. An invitation or announcement can qualify if it describes a relevant role or a useful way to participate. Classify greetings, tags, a role name by itself, generic praise, invites with no context and unrelated product or trading posts as off_topic. Reserve review for genuinely undecidable cases with a concrete signal of the Week 1 topic, such as text that explicitly points to a role guide in an unavailable image, video or quote but gives no detail itself. A bare link, generic mention of Entropy or Discord, or simple campaign hashtag is off_topic unless the text also gives evidence of the topic. Use match or off_topic when the visible evidence supports a choice."
 }

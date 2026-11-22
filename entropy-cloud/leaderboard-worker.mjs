@@ -222,7 +222,11 @@ async function adminCampaign(env, url) {
 async function publicCampaign(env, url, profile) {
   const { view, posts, snapshot } = await loadCampaign(env, url);
   const page = requestedPage(url.searchParams.get('page'));
-  if (!profile) return Response.json({ ...view, ...rankPage(snapshot, page, searchQuery(url)) }, { headers: privateHeaders });
+  if (!profile) {
+    const configured = view.week && (await configuredCampaigns()).find(({ id }) => id === view.week.id);
+    const week = configured?.publicBrief ? { ...view.week, brief: configured.publicBrief } : view.week;
+    return Response.json({ ...view, week, ...rankPage(snapshot, page, searchQuery(url)) }, { headers: privateHeaders });
+  }
   const id = url.searchParams.get('creator');
   const row = snapshot.rows.find(creator => creator.author.id === id);
   const totalPages = row ? Math.ceil(row.postCount / POST_PAGE_SIZE) : 0;

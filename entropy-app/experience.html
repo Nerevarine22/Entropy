@@ -44,13 +44,21 @@
     </section>
     <section class="page" id="page-leaderboard">
       <section id="campaign-intro" class="map-section campaign-intro" aria-labelledby="campaign-heading" hidden>
-        <div class="section-top">
-          <div>
-            <h1 id="campaign-heading">Campaign<span class="heading-dot">.</span></h1>
-            <p id="campaign-topic"></p>
-            <span id="campaign-dates" class="section-meta"></span>
+        <div class="section-top campaign-page-heading">
+          <h1 id="campaign-heading">Campaign<span class="heading-dot">.</span></h1>
+          <label class="admin-filter campaign-filter"><span>Campaign week</span><select id="campaign-week" disabled></select></label>
+        </div>
+        <p id="campaign-intro-state" class="campaign-intro-state" role="status">Loading campaign…</p>
+        <div id="campaign-brief" class="campaign-brief" hidden>
+          <div class="campaign-brief-main">
+            <div class="campaign-brief-meta"><span id="campaign-week-label"></span><span id="campaign-dates"></span><span id="campaign-phase" class="campaign-phase"></span></div>
+            <h2 id="campaign-topic"></h2>
+            <p id="campaign-summary" hidden></p>
           </div>
-          <label class="admin-filter campaign-filter"><span>Campaign week</span><select id="campaign-week"></select></label>
+          <section id="campaign-topics" class="campaign-topics" aria-labelledby="campaign-topics-heading" hidden>
+            <h3 id="campaign-topics-heading">What creators covered</h3>
+            <ul id="campaign-topic-list" class="campaign-topic-list"></ul>
+          </section>
         </div>
       </section>
       <section id="map-section" class="map-section" aria-labelledby="map-heading">
