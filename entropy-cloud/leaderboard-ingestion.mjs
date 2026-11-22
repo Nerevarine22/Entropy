@@ -34,21 +34,22 @@ function budgetFor(state, at) {
   return { month, day, units: previous?.month === month ? previous.units : 0,
     metricUnits: previous?.month === month ? (previous.metricUnits ?? 0) : 0,
     dailyMetricUnits: previous?.day === day ? (previous.dailyMetricUnits ?? 0) : 0,
-    catchupAttempts: previous?.day === day ? previous.catchupAttempts : 0 };
+    catchupAttempts: previous?.day === day ? (previous.catchupAttempts ?? 0) : 0,
+    recoveryAttempts: previous?.day === day ? (previous.recoveryAttempts ?? 0) : 0 };
 }
 
 function due(value, now) {
   return !value || Date.parse(value) <= now;
 }
 
-function discoveryStep(state, now, budget, lane) {
+function discoveryStep(state, now, budget, lane, recovery = false) {
   for (let offset = 0; offset < STREAMS.length; offset++) {
     const index = (state.next + offset) % STREAMS.length;
     const [key, term] = STREAMS[index];
     const sync = state.streams[key], hourly = sync?.hourly;
     if (sync?.paused) continue;
     const ready = lane === 'latest' ? due(hourly?.nextRunAt || sync?.nextRunAt, now)
-      : budget.catchupAttempts < CATCHUP_LIMIT && hourly?.pendingWindows?.length && due(hourly.nextAttemptAt, now);
+      : (recovery || budget.catchupAttempts < CATCHUP_LIMIT) && hourly?.pendingWindows?.length && due(hourly.nextAttemptAt, now);
     if (ready) return { index, key, term, lane, sync };
   }
   return null;
@@ -166,7 +167,10 @@ async function refreshMetrics(db, state, api, posts, generation, args, now) {
   } };
 }
 
-export async function collectLeaderboardPage(env, { now = Date.now(), client } = {}) {
+export async function collectLeaderboardPage(env, { now = Date.now(), client, recoveryLimit = 0 } = {}) {
+  if (!Number.isSafeInteger(recoveryLimit) || recoveryLimit < 0) throw new Error('Invalid recovery request limit.');
+  const recovery = recoveryLimit > 0;
+  const chooseStep = (state, budget) => recovery ? discoveryStep(state, now, budget, 'catchup', true) : nextStep(state, now, budget);
   const key = env.TWITTERAPI_IO_KEY?.trim();
   const startingAt = Date.parse(env.ENTROPY_SCAN_START_UTC);
   if ((!key && !client) || !Number.isFinite(startingAt) || startingAt >= now) return { status: 'disabled' };
@@ -174,16 +178,18 @@ export async function collectLeaderboardPage(env, { now = Date.now(), client } =
   let state = await loadState(db);
   let budget = budgetFor(state, at);
   if (budget.units + PAGE_RESERVE > MONTHLY_UNITS) return { status: 'monthly-budget' };
-  if (!nextStep(state, now, budget)) return { status: 'idle' };
+  if (recovery && budget.recoveryAttempts >= recoveryLimit) return { status: 'recovery-budget' };
+  if (!chooseStep(state, budget)) return { status: 'idle' };
 
   const control = await db.prepare("SELECT generation,revision,daily_date,daily_attempts FROM entropy_control WHERE id='main'").first();
   if (!control) return { status: 'uninitialized' };
-  if (control.daily_date === day && control.daily_attempts >= DAILY_LIMIT) return { status: 'daily-budget' };
+  const dailyLimit = DAILY_LIMIT + budget.recoveryAttempts + Number(recovery);
+  if (control.daily_date === day && control.daily_attempts >= dailyLimit) return { status: 'daily-budget' };
   const token = crypto.randomUUID();
   const claim = await db.prepare(`UPDATE entropy_control SET lease_token=?,lease_until=?
     WHERE id='main' AND generation=? AND revision=? AND (lease_token IS NULL OR lease_until<=?)
       AND (daily_date<>? OR daily_attempts<?)`)
-    .bind(token, now + LEASE_MS, control.generation, control.revision, now, day, DAILY_LIMIT).run();
+    .bind(token, now + LEASE_MS, control.generation, control.revision, now, day, dailyLimit).run();
   if (claim.meta.changes !== 1) return { status: 'busy' };
 
   const guardArgs = [control.generation, control.revision, token, now];
@@ -192,7 +198,8 @@ export async function collectLeaderboardPage(env, { now = Date.now(), client } =
     state = await loadState(db);
     budget = budgetFor(state, at);
     if (budget.units + PAGE_RESERVE > MONTHLY_UNITS) return { status: 'monthly-budget' };
-    let step = nextStep(state, now, budget);
+    if (recovery && budget.recoveryAttempts >= recoveryLimit) return { status: 'recovery-budget' };
+    let step = chooseStep(state, budget);
     if (!step) return { status: 'idle' };
     let posts;
     if (step.lane === 'metrics') {
@@ -216,7 +223,8 @@ export async function collectLeaderboardPage(env, { now = Date.now(), client } =
     state.budget = { ...budget, units: budget.units + reserved,
       metricUnits: budget.metricUnits + (metrics ? reserved : 0),
       dailyMetricUnits: budget.dailyMetricUnits + (metrics ? reserved : 0),
-      catchupAttempts: budget.catchupAttempts + Number(lane === 'catchup') };
+      catchupAttempts: budget.catchupAttempts + Number(lane === 'catchup' && !recovery),
+      recoveryAttempts: budget.recoveryAttempts + Number(recovery) };
     state.lastResult = { at, stream, lane, status: 'attempted' };
     const reserve = db.prepare(`UPDATE entropy_control
       SET daily_attempts=CASE WHEN daily_date=? THEN daily_attempts+1 ELSE 1 END,daily_date=? WHERE ${guarded}`)
@@ -224,7 +232,7 @@ export async function collectLeaderboardPage(env, { now = Date.now(), client } =
     const reservation = await db.batch([checkpointWrite(db, state, guardArgs), reserve]);
     if (reservation.some(result => result.meta.changes !== 1)) throw new Error('Could not reserve a collector attempt.');
 
-    const api = client ?? createClient({ apiKey: key, timeoutMs: metrics ? 35000 : 15000 });
+    const api = client ?? createClient({ apiKey: key, timeoutMs: metrics || recovery ? 35000 : 15000 });
     const result = metrics ? await refreshMetrics(db, state, api, posts, control.generation, guardArgs, now)
       : await scanDiscovery(db, state, step, api, control, guardArgs, now, startingAt);
     state.budget.units = budget.units + result.units;

@@ -62,6 +62,25 @@ function fixture(context) {
 
 const page = (tweets = [], nextCursor = null) => ({ tweets, hasNextPage: Boolean(nextCursor), nextCursor });
 
+test('manual recovery resumes saved cursors beyond the catch-up cap and preserves scheduled capacity', async context => {
+  const f = fixture(context);
+  await f.run(5, { searchPage: async () => page([tweet('102', 3)], 'saved-cursor') });
+  f.db.exec(`UPDATE entropy_control SET daily_attempts=167 WHERE id='main';
+    UPDATE entropy_leaderboard_ingestion SET payload=json_set(payload,'$.budget.catchupAttempts',48) WHERE id='main'`);
+  const cursors = [];
+  const client = { async searchPage({ cursor }) { cursors.push(cursor); return page(); } };
+  const runRecovery = recoveryLimit => collectLeaderboardPage(f.env, { now: clock(7), client, recoveryLimit });
+
+  assert.equal((await runRecovery(1)).status,'complete');
+  assert.deepEqual(cursors,['saved-cursor']);
+  assert.equal(f.state().budget.catchupAttempts,48);
+  assert.equal(f.state().budget.recoveryAttempts,1);
+  assert.equal((await runRecovery(1)).status,'recovery-budget');
+  assert.equal((await f.run(8,client)).lane,'latest');
+  assert.equal(f.db.prepare("SELECT daily_attempts FROM entropy_control WHERE id='main'").get().daily_attempts,169);
+  assert.equal((await f.run(9,client)).status,'daily-budget');
+});
+
 test('TwitterScore rejects redirects without forwarding the API key', async () => {
   await assert.rejects(fetchSmartFollowers('11', 'fixture', async (_url, options) => {
     assert.equal(options.redirect, 'manual');
