@@ -818,3 +818,94 @@ button.activity-metric[aria-pressed='true']::after { content: ''; position: abso
   .activity-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .activity-dashboard { grid-template-columns: minmax(0, 1fr); }
 }
+
+.score-about {
+  --score-muted: #adb6b1;
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: clamp(32px, 6vw, 72px) 0 clamp(48px, 7vw, 88px);
+}
+.score-about-header { display: flex; align-items: end; justify-content: space-between; gap: 18px; margin-bottom: clamp(24px, 4vw, 36px); }
+.score-about-header h1 { margin: 0; font-size: clamp(40px, 6vw, 62px); font-weight: 500; line-height: 1.02; letter-spacing: -.065em; }
+.score-about-header p { margin: 10px 0 0; color: var(--score-muted); line-height: 1.5; }
+.score-about-header .outline-button { flex: none; }
+.score-about-hero, .score-about-panel { min-width: 0; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+.score-about-hero {
+  display: grid;
+  gap: clamp(20px, 3vw, 30px);
+  padding: clamp(20px, 3.6vw, 38px);
+  border-color: #37483f;
+  background:
+    radial-gradient(ellipse at 92% 7%, #24382c95, transparent 66%),
+    repeating-linear-gradient(90deg, transparent 0 47px, #b7e3c90a 47px 48px),
+    #101611;
+}
+.score-about-hero h2 { margin: 0; font-size: clamp(26px, 4vw, 44px); line-height: 1.1; font-weight: 500; letter-spacing: -.045em; }
+.score-about-hero p:not(.score-about-equation) { max-width: 65ch; margin: 10px 0 0; color: #b8c7be; line-height: 1.6; }
+.score-about-equation {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 7px 13px;
+  margin: 0;
+  padding: 14px 0 0;
+  border-top: 1px solid #8ba8964d;
+  color: #d6e2db;
+  font: 500 clamp(12px, 1.5vw, 16px)/1.5 var(--mono);
+}
+.score-about-equation strong { color: var(--text); font-weight: 600; }
+.score-about-equation > span { white-space: nowrap; }
+.score-about-equation b { margin-right: 3px; color: var(--accent); font-weight: 500; }
+.score-about-breakdown {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  gap: 14px;
+  margin-block: 14px;
+}
+.score-about-panel { padding: clamp(16px, 2.45vw, 26px); }
+.score-about-panel h2 { margin: 0; font-size: clamp(18px, 2.4vw, 22px); font-weight: 500; letter-spacing: -.03em; }
+.score-about-breakdown dl { margin: 16px 0 0; }
+.score-about-breakdown dl > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  padding: 13px 0;
+  border-top: 1px solid var(--line);
+}
+.score-about-breakdown dl > div:last-child { padding-bottom: 0; }
+.score-about-breakdown dt { font-weight: 600; }
+.score-about-breakdown dd { margin: 0; color: var(--score-muted); line-height: 1.5; }
+.score-about-breakdown dd:last-child { flex-basis: 100%; }
+.score-about-breakdown .score-about-weight { color: var(--accent); font: 500 11px/1.45 var(--mono); }
+.score-about-variables {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px 22px;
+  margin: 16px 0 18px;
+  padding: 12px 0;
+  border-block: 1px solid var(--line);
+}
+.score-about-variables > div { display: flex; align-items: baseline; gap: 7px; }
+.score-about-variables dt { color: var(--accent); font: 500 12px var(--mono); }
+.score-about-variables dd { margin: 0; color: var(--score-muted); font-size: 12px; }
+.score-about-calculations { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.score-about-calculations > div { min-width: 0; padding: clamp(12px, 1.6vw, 18px); border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
+.score-about-calculations h3 { margin: 0 0 12px; font-size: 14px; font-weight: 600; }
+.score-about-calculations pre {
+  margin: 0;
+  color: #d4e2da;
+  font: clamp(11px, 1.1vw, 12px)/1.8 var(--mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.score-about-calculations code, .score-about-note code { font: inherit; }
+.score-about-note { max-width: 90ch; margin: 14px 0 0; color: var(--score-muted); font-size: 12px; line-height: 1.55; }
+.score-about-note code { color: var(--accent); font-family: var(--mono); }
+@media (max-width: 760px) {
+  .score-about-breakdown, .score-about-calculations { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 560px) {
+  .score-about-header { align-items: start; flex-direction: column; }
+}

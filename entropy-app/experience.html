@@ -219,7 +219,100 @@
         </div>
       </div>
     </section>
-    <section class="page info-page" id="page-about" hidden><div class="eyebrow"><span class="status-dot"></span> ABOUT THIS PROJECT</div><h1>The community <span>behind Entropy.</span></h1><p class="info-lead">A home for the creators contributing to the Entropy conversation.</p><div class="about-card"><div class="about-pattern" aria-hidden="true"></div><div class="about-content"><span>ENTROPY / CREATORS</span><h2>Good ideas deserve<br>to be seen.</h2><p>Discover creators, explore their posts and see how the conversation is growing.</p><a class="outline-button" href="https://x.com/entropyIO" target="_blank" rel="noopener noreferrer">Follow Entropy on X <span>↗</span></a></div></div></section>
+    <section class="page score-about" id="page-about" aria-labelledby="about-heading" hidden>
+      <header class="score-about-header">
+        <div>
+          <h1 id="about-heading">About<span class="heading-dot">.</span></h1>
+          <p>An independent leaderboard for the creators contributing to the Entropy conversation on X.</p>
+        </div>
+        <a class="outline-button" href="https://x.com/entropyIO" target="_blank" rel="noopener noreferrer">Follow Entropy on X <span aria-hidden="true">↗</span></a>
+      </header>
+
+      <section class="score-about-hero" aria-labelledby="about-score-heading">
+        <div>
+          <h2 id="about-score-heading">Creator Score</h2>
+          <p>The score combines impressions and reactions across a creator’s counted posts. Campaign rankings use the same formula with the posts accepted for each week.</p>
+        </div>
+        <p class="score-about-equation"><strong>Base score</strong><span><b>×</b> ER multiplier</span><span><b>×</b> Post multiplier</span><span><b>×</b> Anti-farm</span></p>
+      </section>
+
+      <div class="score-about-breakdown">
+        <section class="score-about-panel" aria-labelledby="about-base-heading">
+          <h2 id="about-base-heading">Base score components</h2>
+          <dl>
+            <div>
+              <dt>Audience quality</dt><dd class="score-about-weight">Up to 540 points</dd>
+              <dd>Smart Followers from TwitterScore earn a logarithmic bonus, capped at 35% of the reach points.</dd>
+            </div>
+            <div>
+              <dt>Reach</dt><dd class="score-about-weight">10 × √impressions</dd>
+              <dd>Impressions add points at a diminishing rate, so each additional thousand contributes less as reach grows.</dd>
+            </div>
+            <div>
+              <dt>Engagement depth</dt><dd class="score-about-weight">1 / 3 / 4–6</dd>
+              <dd>A like counts for 1, a repost for 3, and a quote for 4 to 6 depending on reach. Weighted reactions are capped at 1% to 5% of impressions.</dd>
+            </div>
+            <div>
+              <dt>Reach efficiency</dt><dd class="score-about-weight">Up to 240 points</dd>
+              <dd>Impressions earn a bonus in proportion to how far they reach relative to the creator’s follower count, with diminishing returns.</dd>
+            </div>
+          </dl>
+        </section>
+        <section class="score-about-panel" aria-labelledby="about-multipliers-heading">
+          <h2 id="about-multipliers-heading">Dynamic multipliers</h2>
+          <dl>
+            <div>
+              <dt>Engagement rate</dt><dd class="score-about-weight">0.90× to 1.00×</dd>
+              <dd>Likes, reposts, and quotes divided by impressions give the engagement rate. The multiplier reaches its maximum at 5%.</dd>
+            </div>
+            <div>
+              <dt>Posting consistency</dt><dd class="score-about-weight">+1% per post</dd>
+              <dd>Each counted post adds one percentage point to the multiplier. The bonus tops out at 20 posts.</dd>
+            </div>
+            <div>
+              <dt>Anti-farm adjustment</dt><dd class="score-about-weight">Up to −35%</dd>
+              <dd>The penalty begins above 10% engagement and 1,000 impressions. It reaches its maximum at 20% engagement and 5,000 impressions.</dd>
+            </div>
+          </dl>
+        </section>
+      </div>
+
+      <section class="score-about-panel score-about-formula" aria-labelledby="about-formula-heading">
+        <h2 id="about-formula-heading">Full formula</h2>
+        <dl class="score-about-variables" aria-label="Formula inputs">
+          <div><dt>V</dt><dd>Impressions</dd></div>
+          <div><dt>L, R, Q</dt><dd>Likes, reposts, quotes</dd></div>
+          <div><dt>F</dt><dd>Total followers</dd></div>
+          <div><dt>SF</dt><dd>Smart Followers</dd></div>
+          <div><dt>P</dt><dd>Counted posts</dd></div>
+        </dl>
+        <div class="score-about-calculations">
+          <div>
+            <h3>Base score</h3>
+            <pre><code>Scale = min(1, V / 20,000)
+Reach = 10 × √V
+Audience = min(540, 0.35 × Reach)
+           × min(1, log₁₀(1 + SF) / 3)
+Reactions = L + 3 × R + (4 + 2 × Scale) × Q
+Cap = V × (0.01 + 0.04 × Scale)
+Engagement = 0.7 × min(Reactions, Cap) × Scale^1.5
+Efficiency = 120 × min(ln(1 + V / max(F, 1)), 2) × Scale
+Base = Reach + Audience + Engagement + Efficiency</code></pre>
+          </div>
+          <div>
+            <h3>Multipliers and result</h3>
+            <pre><code>ER = (L + R + Q) / V
+ER multiplier = 0.90 + 2 × min(ER, 0.05)
+Post multiplier = 1 + 0.01 × min(P, 20)
+Anti-farm = 1 − 0.35 × clamp((ER − 0.10) / 0.10)
+                     × clamp((V − 1,000) / 4,000)
+
+Score = Base × ER multiplier × Post multiplier × Anti-farm</code></pre>
+          </div>
+        </div>
+        <p class="score-about-note"><code>clamp(x)</code> keeps a value between 0 and 1. If Smart Followers or total followers are unavailable, the corresponding bonus is zero. The leaderboard displays the score rounded to a whole number.</p>
+      </section>
+    </section>
   </main>
   <footer class="footer"><div><span class="footer-brand">entropy<span>.</span></span><span>CREATORS</span></div><span>AN INDEPENDENT COMMUNITY VIEW</span><a href="https://x.com/entropyIO" target="_blank" rel="noopener noreferrer">X / @entropyIO ↗</a></footer>
   <dialog id="creator-dialog" aria-labelledby="dialog-name"><div class="dialog-head"><span>CREATOR PROFILE <span class="small-sep">/</span> ENTROPY</span><button id="close-dialog" aria-label="Close profile">✕</button></div><div id="dialog-content"></div></dialog>
