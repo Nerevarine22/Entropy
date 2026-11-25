@@ -3,6 +3,17 @@
   const $ = id => document.getElementById(id);
   const admin = /^\/admin\/?$/.test(location.pathname);
   const statsEnabled = !admin;
+  const analyticsEnabled = location.protocol === 'https:' && location.pathname === '/'
+    && ['entropy-creators.xyz', 'entropy-entropy-app.vercel.app'].includes(location.hostname);
+  let analyticsPage;
+  if (analyticsEnabled) {
+    window.va ||= (...args) => (window.vaq ||= []).push(args);
+    window.va('beforeSend', event => ({ ...event, url: location.origin + '/' }));
+    const script = document.createElement('script');
+    script.src = '/_vercel/insights/script.js';
+    script.dataset.disableAutoTrack = '1';
+    document.head.append(script);
+  }
   const source = admin ? '/api/admin' : document.currentScript.dataset.source;
   async function getData(params, signal, action) {
     const url = new URL(source, location.origin);
@@ -991,6 +1002,10 @@
     const hash = fragment === 'methodology' ? 'activity' : fragment;
     const key = admin ? (adminSignedIn ? (hash === 'weekly-review' ? hash : 'leaderboard') : '')
       : ['leaderboard', 'campaign', 'activity', 'about'].includes(hash) || (statsEnabled && hash === 'my-stats') ? hash : 'leaderboard';
+    if (analyticsEnabled && key !== analyticsPage) {
+      analyticsPage = key;
+      window.va('pageview', { path: '/', route: key === 'leaderboard' ? '/' : '/' + key });
+    }
     const campaign = key === 'campaign';
     const board = campaign || key === 'leaderboard';
     document.querySelectorAll('.page').forEach(el => { el.hidden = el.id !== 'page-' + (campaign ? 'leaderboard' : key); });
