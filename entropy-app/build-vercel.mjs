@@ -1,6 +1,6 @@
 import { copyFile, mkdir, readdir, unlink } from 'node:fs/promises';
 
-const assets = ['experience.css', 'experience.js', 'entropy-logo.png'];
+const assets = ['experience.css', 'experience.js', 'entropy-logo.png', 'source-sans-3-latin.woff2', 'source-sans-3-OFL.txt'];
 const output = new URL('./dist/', import.meta.url);
 
 await mkdir(output, { recursive: true });

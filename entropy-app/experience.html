@@ -46,7 +46,13 @@
       <section id="campaign-intro" class="map-section campaign-intro" aria-labelledby="campaign-heading" hidden>
         <div class="section-top campaign-page-heading">
           <h1 id="campaign-heading">Campaign<span class="heading-dot">.</span></h1>
-          <label class="admin-filter campaign-filter"><span>Campaign week</span><select id="campaign-week" disabled></select></label>
+          <div id="campaign-week-picker" class="campaign-week-picker">
+            <span id="campaign-week-picker-label">Campaign week</span>
+            <button id="campaign-week-button" class="campaign-week-button" type="button" aria-labelledby="campaign-week-picker-label campaign-week-value" aria-haspopup="listbox" aria-expanded="false" aria-controls="campaign-week-options">
+              <span id="campaign-week-value">Week 1</span>
+            </button>
+            <ul id="campaign-week-options" class="campaign-week-options" role="listbox" aria-labelledby="campaign-week-picker-label" hidden></ul>
+          </div>
         </div>
         <p id="campaign-intro-state" class="campaign-intro-state" role="status">Loading campaign…</p>
         <div id="campaign-brief" class="campaign-brief" hidden>
@@ -60,6 +66,70 @@
             <ul id="campaign-topic-list" class="campaign-topic-list"></ul>
           </section>
         </div>
+        <section id="campaign-winners" class="campaign-winners" aria-labelledby="campaign-winners-heading" hidden>
+          <header>
+            <h2 id="campaign-winners-heading">Discord winners</h2>
+            <p>Selected by the Entropy team in Discord.</p>
+          </header>
+          <div class="campaign-winner-groups">
+            <div class="campaign-winner-group">
+              <h3>Entropy Voices</h3>
+              <ul class="campaign-winner-links">
+                <li><a href="https://x.com/CryptoTeluguO" target="_blank" rel="noopener noreferrer">@CryptoTeluguO <span aria-hidden="true">↗</span></a></li>
+                <li><a href="https://x.com/Crypto_Pranjal" target="_blank" rel="noopener noreferrer">@Crypto_Pranjal <span aria-hidden="true">↗</span></a></li>
+                <li><a href="https://x.com/edoweb3" target="_blank" rel="noopener noreferrer">@edoweb3 <span aria-hidden="true">↗</span></a></li>
+                <li><a href="https://x.com/quang250802" target="_blank" rel="noopener noreferrer">@quang250802 <span aria-hidden="true">↗</span></a></li>
+                <li><a href="https://x.com/LeoXBT67" target="_blank" rel="noopener noreferrer">@LeoXBT67 <span aria-hidden="true">↗</span></a></li>
+              </ul>
+            </div>
+            <div class="campaign-winner-group">
+              <h3>Entropy Council</h3>
+              <ul class="campaign-winner-links">
+                <li><a href="https://x.com/donspotless0" target="_blank" rel="noopener noreferrer">@donspotless0 <span aria-hidden="true">↗</span></a></li>
+              </ul>
+            </div>
+          </div>
+        </section>
+        <div id="campaign-pending" class="campaign-pending" hidden>
+          <div class="campaign-brief">
+            <div class="campaign-brief-main">
+              <div class="campaign-brief-meta"><strong class="campaign-week-label">Week 2</strong><span class="campaign-phase">Upcoming</span></div>
+              <h2>Weekly task not announced yet</h2>
+            </div>
+          </div>
+          <section class="campaign-grants" aria-labelledby="campaign-grants-heading">
+            <div class="section-top campaign-grants-heading">
+              <h2 id="campaign-grants-heading">Entropy Creator Grants</h2>
+              <a class="campaign-discord-link" href="https://discord.com/channels/1526213747666849873/1567533876132446278" target="_blank" rel="noopener noreferrer">View announcement on Discord <span aria-hidden="true">↗</span></a>
+            </div>
+            <dl class="campaign-grant-metrics">
+              <div><dt>Weekly pool</dt><dd>$2,500</dd></div>
+              <div><dt>Weekly recipients</dt><dd>25</dd></div>
+              <div><dt>Grant per recipient</dt><dd>$100</dd></div>
+            </dl>
+            <div class="campaign-grant-details">
+              <section>
+                <h3>Who can apply</h3>
+                <p>You need one of these Discord roles.</p>
+                <ul class="campaign-grant-roles">
+                  <li>Entropy Voices</li>
+                  <li>Entropy Council</li>
+                  <li>Entropy Genesis</li>
+                </ul>
+                <p>Newly promoted Entropy Voices become eligible the following week.</p>
+              </section>
+              <section>
+                <h3>How to participate</h3>
+                <ol>
+                  <li>Publish original content on X based on the Weekly Task.</li>
+                  <li>Submit the post link in <strong>#community-content</strong> on Discord with <strong>#task</strong>, following the weekly submission guidelines.</li>
+                </ol>
+                <p>The team reviews all eligible submissions each week. Confirmed manipulation of views or engagement leads to disqualification.</p>
+              </section>
+            </div>
+            <p class="campaign-grant-payment"><strong>Receiving your grant.</strong> Link both X and Discord to your Entropy account. Grants are credited directly to that account.</p>
+          </section>
+        </div>
       </section>
       <section id="map-section" class="map-section" aria-labelledby="map-heading">
         <div class="section-top">
@@ -71,7 +141,7 @@
         </div>
         <div id="influence-map" class="influence-map" aria-label="Top creators by post views"></div>
       </section>
-      <section class="overview-section" aria-labelledby="overview-heading">
+      <section id="overview-section" class="overview-section" aria-labelledby="overview-heading">
         <h2 id="overview-heading">Overview</h2>
         <div class="overview-bar">
           <div><span class="overview-label">CREATORS TRACKED</span><strong id="creator-total">—</strong></div>
@@ -80,7 +150,7 @@
           <div class="overview-update"><span class="status-dot"></span><span id="updated">LOCAL SNAPSHOT</span></div>
         </div>
       </section>
-      <section class="leaderboard-section" aria-labelledby="board-heading">
+      <section id="leaderboard-section" class="leaderboard-section" aria-labelledby="board-heading">
         <div class="section-top board-heading">
           <h2 id="board-heading" tabindex="-1"><span id="board-title">Leaderboard</span><span class="heading-dot">.</span></h2>
           <div class="board-controls">

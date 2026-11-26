@@ -42,6 +42,11 @@
   let adminSignedIn = false;
   let boardMode = null;
   const boardSkeletonDelay = 180;
+  const pendingCampaignWeek = 'week-2';
+  const campaignWeekPicker = $('campaign-week-picker');
+  const campaignWeekButton = $('campaign-week-button');
+  const campaignWeekOptions = $('campaign-week-options');
+  let campaignWeek = 'week-1';
   const earlyBadge = '<span class="early-badge" title="Posted about Entropy through November 16, 2026 (UTC)">Early</span>';
   const reviewDate = value => value ? new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }).format(new Date(value)) : '';
 
@@ -51,11 +56,59 @@
     select.disabled = !data.weeks.length;
   }
 
+  function setCampaignWeek(id) {
+    campaignWeek = id;
+    let label = 'Select week';
+    for (const option of campaignWeekOptions.children) {
+      const selected = option.dataset.week === id;
+      option.setAttribute('aria-selected', selected);
+      if (selected) label = option.textContent;
+    }
+    $('campaign-week-value').textContent = label;
+  }
+
+  function renderCampaignWeeks(weeks, selected) {
+    const items = weeks.some(week => week.id === pendingCampaignWeek)
+      ? weeks : [...weeks, { id: pendingCampaignWeek, label: 'Week 2' }];
+    const current = [...campaignWeekOptions.children];
+    if (current.length !== items.length || items.some(({ id, label }, i) => current[i].dataset.week !== id || current[i].textContent !== label)) {
+      const focusedWeek = document.activeElement?.dataset.week;
+      const options = items.map(({ id, label }) => {
+        const option = document.createElement('li');
+        option.dataset.week = id;
+        option.setAttribute('role', 'option');
+        option.tabIndex = -1;
+        option.textContent = label;
+        return option;
+      });
+      campaignWeekOptions.replaceChildren(...options);
+      if (!campaignWeekOptions.hidden) {
+        (options.find(option => option.dataset.week === focusedWeek) || options[0]).focus();
+      }
+    }
+    setCampaignWeek(selected);
+  }
+
+  function closeCampaignWeeks(restoreFocus = false) {
+    if (campaignWeekOptions.hidden) return;
+    campaignWeekOptions.hidden = true;
+    campaignWeekButton.setAttribute('aria-expanded', 'false');
+    if (restoreFocus) campaignWeekButton.focus();
+  }
+
+  function openCampaignWeeks(fromEnd = false) {
+    campaignWeekOptions.hidden = false;
+    campaignWeekButton.setAttribute('aria-expanded', 'true');
+    const edge = fromEnd ? campaignWeekOptions.lastElementChild : campaignWeekOptions.firstElementChild;
+    (campaignWeekOptions.querySelector('[aria-selected="true"]') || edge).focus();
+  }
+
   function showCampaignSummary(data) {
-    displayWeeks($('campaign-week'), data);
+    renderCampaignWeeks(data.weeks, data.week?.id ?? '');
     const { week } = data;
     $('campaign-brief').hidden = !week;
     $('campaign-intro-state').hidden = Boolean(week);
+    $('campaign-winners').hidden = week?.id !== 'week-1';
     if (!week) {
       $('campaign-intro-state').textContent = 'Campaign weeks will appear here.';
       return;
@@ -89,6 +142,7 @@
     $('campaign-brief').hidden = true;
     $('campaign-intro-state').hidden = false;
     $('campaign-intro-state').textContent = 'Loading campaign…';
+    $('campaign-winners').hidden = campaignWeek !== 'week-1';
   }
 
   function reviewBadge(review) {
@@ -192,7 +246,7 @@
   async function loadBoard(page, scrollToTable = false) {
     if (!boardMode) return;
     const campaign = boardMode === 'campaign';
-    const week = campaign ? $('campaign-week').value : '';
+    const week = campaign ? campaignWeek : '';
     boardRequest?.abort();
     const request = new AbortController();
     boardRequest = request;
@@ -417,7 +471,7 @@
       <p id="profile-post-status" class="board-footer" role="status"></p>
       <button id="profile-post-more" class="post-toggle" type="button" hidden>Load more posts</button>`;
     profileId = id;
-    profileWeek = boardMode === 'campaign' ? $('campaign-week').value : null;
+    profileWeek = boardMode === 'campaign' ? campaignWeek : null;
     profileSnapshot = null;
     nextPostPage = 1;
     dialog.showModal();
@@ -1000,8 +1054,10 @@
   }
 
   function showPage() {
+    closeCampaignWeeks();
     const fragment = location.hash.slice(1);
-    const hash = fragment === 'methodology' ? 'activity' : fragment;
+    const pendingCampaign = !admin && fragment === `campaign/${pendingCampaignWeek}`;
+    const hash = pendingCampaign ? 'campaign' : fragment === 'methodology' ? 'activity' : fragment;
     const key = admin ? (adminSignedIn ? (hash === 'weekly-review' ? hash : 'leaderboard') : '')
       : ['leaderboard', 'campaign', 'activity', 'about'].includes(hash) || (statsEnabled && hash === 'my-stats') ? hash : 'leaderboard';
     if (analyticsEnabled && key !== analyticsPage) {
@@ -1014,6 +1070,9 @@
     document.querySelectorAll('[data-page]').forEach(el => { el.classList.toggle('active', el.dataset.page === key); if (el.dataset.page === key) el.setAttribute('aria-current', 'page'); else el.removeAttribute('aria-current'); });
     $('map-section').hidden = campaign;
     $('campaign-intro').hidden = !campaign;
+    $('campaign-pending').hidden = !pendingCampaign;
+    $('overview-section').hidden = pendingCampaign;
+    $('leaderboard-section').hidden = pendingCampaign;
     $('post-total-label').textContent = campaign ? 'POSTS INCLUDED' : 'POSTS INDEXED';
     $('board-title').textContent = admin ? 'Moderation' : campaign ? 'Weekly leaderboard' : 'Leaderboard';
     if (key === 'weekly-review') loadWeeklyReview();
@@ -1028,9 +1087,14 @@
       myStatsRequest.abort();
       $('my-stats-feedback').hidden = true;
     }
-    if (!board) {
+    if (!board || pendingCampaign) {
       boardRequest?.abort();
+      clearTimeout(searchTimer);
       boardMode = null;
+      if (pendingCampaign) {
+        setCampaignWeek(pendingCampaignWeek);
+        for (const id of ['campaign-brief', 'campaign-intro-state', 'campaign-winners']) $(id).hidden = true;
+      }
       return;
     }
     if (boardMode !== key) {
@@ -1038,7 +1102,10 @@
       clearTimeout(searchTimer);
       $('search').value = '';
       resetBoard();
-      if (campaign) showCampaignLoading();
+      if (campaign) {
+        if (campaignWeek === pendingCampaignWeek) setCampaignWeek('week-1');
+        showCampaignLoading();
+      }
       loadBoard(1);
     }
     if (key === 'leaderboard' && loadedBoard) buildMap();
@@ -1118,10 +1185,60 @@
     });
     $('review-filter').addEventListener('change', () => loadBoard(1));
   }
-  $('campaign-week').addEventListener('change', () => {
+  function chooseCampaignWeek(id) {
+    closeCampaignWeeks(true);
+    if (campaignWeek === id) return;
+    setCampaignWeek(id);
+    if (id === pendingCampaignWeek) {
+      location.hash = `campaign/${pendingCampaignWeek}`;
+      return;
+    }
+    if (location.hash === `#campaign/${pendingCampaignWeek}`) {
+      location.hash = 'campaign';
+      return;
+    }
     showCampaignLoading();
     resetBoard();
     loadBoard(1);
+  }
+  renderCampaignWeeks([{ id: 'week-1', label: 'Week 1' }], campaignWeek);
+  campaignWeekButton.addEventListener('click', () => {
+    if (campaignWeekOptions.hidden) openCampaignWeeks();
+    else closeCampaignWeeks(true);
+  });
+  campaignWeekButton.addEventListener('keydown', event => {
+    if (!['ArrowDown', 'ArrowUp'].includes(event.key)) return;
+    event.preventDefault();
+    openCampaignWeeks(event.key === 'ArrowUp');
+  });
+  campaignWeekOptions.addEventListener('click', event => {
+    const option = event.target.closest('[role="option"]');
+    if (option) chooseCampaignWeek(option.dataset.week);
+  });
+  campaignWeekOptions.addEventListener('keydown', event => {
+    const option = event.target.closest('[role="option"]');
+    if (!option) return;
+    if (event.key === 'Tab') {
+      closeCampaignWeeks(true);
+      return;
+    }
+    switch (event.key) {
+      case 'Escape': closeCampaignWeeks(true); break;
+      case 'Enter':
+      case ' ': chooseCampaignWeek(option.dataset.week); break;
+      case 'ArrowDown': option.nextElementSibling?.focus(); break;
+      case 'ArrowUp': option.previousElementSibling?.focus(); break;
+      case 'Home': campaignWeekOptions.firstElementChild.focus(); break;
+      case 'End': campaignWeekOptions.lastElementChild.focus(); break;
+      default: return;
+    }
+    event.preventDefault();
+  });
+  campaignWeekPicker.addEventListener('focusout', event => {
+    if (!campaignWeekPicker.contains(event.relatedTarget)) closeCampaignWeeks();
+  });
+  document.addEventListener('pointerdown', event => {
+    if (!campaignWeekPicker.contains(event.target)) closeCampaignWeeks();
   });
   $('search').addEventListener('input', () => {
     boardRequest?.abort();

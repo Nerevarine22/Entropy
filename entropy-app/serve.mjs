@@ -7,8 +7,8 @@ import { readLocalDataset, withLocalD1 } from './local-d1.mjs';
 import leaderboard, { captureDailyRanks, readMyStats, refreshActivitySnapshot } from '../entropy-cloud/leaderboard-worker.mjs';
 import { createMyStatsHandler } from './x-sign-in.mjs';
 const base = path.dirname(fileURLToPath(import.meta.url));
-const allowed = new Set(['index.html', 'styles.css', 'scoring.js', 'model.js', 'seed.js', 'app.js', 'seed.json', 'experience.html', 'experience.css', 'experience.js', 'entropy-logo.png']);
-const types = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'application/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.png': 'image/png' };
+const allowed = new Set(['index.html', 'styles.css', 'scoring.js', 'model.js', 'seed.js', 'app.js', 'seed.json', 'experience.html', 'experience.css', 'experience.js', 'entropy-logo.png', 'source-sans-3-latin.woff2', 'source-sans-3-OFL.txt']);
+const types = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'application/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.png': 'image/png', '.woff2': 'font/woff2', '.txt': 'text/plain; charset=utf-8' };
 const previewEntries = new Map();
 const previewCache = {
   async match(key) {
