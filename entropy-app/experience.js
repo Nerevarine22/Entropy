@@ -67,9 +67,11 @@
     $('campaign-summary').textContent = brief?.summary ?? '';
     $('campaign-summary').hidden = !brief?.summary;
     $('campaign-dates').textContent = `${reviewDate(starts)} – ${reviewDate(ends - 1)} · UTC`;
-    const phase = Date.now() < starts ? 'Upcoming' : Date.now() < ends ? 'In progress' : 'Ended';
-    $('campaign-phase').textContent = phase;
-    $('campaign-phase').dataset.live = String(phase === 'In progress');
+    const now = Date.now();
+    const phase = now < starts ? 'Upcoming' : now < ends ? 'In progress' : 'Completed';
+    const badge = $('campaign-phase');
+    badge.textContent = phase;
+    badge.dataset.phase = phase;
     const topics = brief?.topics ?? [];
     $('campaign-topics').hidden = !topics.length;
     $('campaign-topic-list').replaceChildren(...topics.map(({ title, description }) => {

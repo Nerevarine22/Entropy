@@ -331,7 +331,8 @@
 .campaign-brief-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 7px 12px; color: var(--campaign-muted); font: 12px var(--mono); }
 #campaign-week-label { color: var(--campaign-accent); font-weight: 600; }
 .campaign-phase { padding: 2px 6px; border: 1px solid #505063; border-radius: 4px; color: var(--campaign-muted); font-size: 11px; }
-.campaign-phase[data-live='true'] { border-color: #7369a5; color: var(--campaign-accent); }
+.campaign-phase[data-phase='In progress'] { border-color: #7369a5; color: var(--campaign-accent); }
+.campaign-phase[data-phase='Completed'] { border-color: #607b6c; background: #c5f5dd12; color: var(--accent); }
 .campaign-brief-main h2 { max-width: 18ch; margin: 16px 0 0; color: var(--campaign-text); font-size: clamp(30px, 4.2vw, 54px); font-weight: 500; line-height: 1.12; letter-spacing: -.045em; }
 .campaign-brief-main > p { max-width: 49ch; margin: 13px 0 0; color: var(--campaign-muted); font-size: 14px; line-height: 1.55; }
 .campaign-topics { padding: clamp(20px, 2.8vw, 33px); border-left: 1px solid var(--campaign-border); }
